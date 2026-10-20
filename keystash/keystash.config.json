@@ -1,0 +1,10 @@
+{
+  "api": "https://key-stash-be.vercel.app/api",
+  "files": {
+    ".env": "development",
+    ".env.local": "development",
+    ".env.development": "development",
+    ".env.staging": "staging",
+    ".env.production": "production"
+  }
+}
