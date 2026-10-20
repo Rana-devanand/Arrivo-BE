@@ -20,10 +20,11 @@ import { journeyRoutes } from './routes/journeys.js';
 import { profileRoutes } from './routes/profile.js';
 import { safetyRoutes } from './routes/safety.js';
 import { watchRoutes } from './routes/watch.js';
+import { internalRoutes } from './routes/internal.js';
 
 export function createApp(
   db: Db,
-  config: Pick<Config, 'CORS_ORIGINS' | 'WATCH_BASE_URL' | 'ENABLE_DEV_ROUTES' | 'DB_DRIVER'>,
+  config: Pick<Config, 'CORS_ORIGINS' | 'WATCH_BASE_URL' | 'ENABLE_DEV_ROUTES' | 'DB_DRIVER'> & { CRON_SECRET?: string },
   mailer: Mailer = noopMailer,
   places: PlacesProvider = noPlaces,
   photos: Cloudinary = noCloudinary,
@@ -31,6 +32,8 @@ export function createApp(
 ): Express {
   const app = express();
   app.disable('x-powered-by');
+  // Behind a proxy (Vercel, Render...) the real client address is in X-Forwarded-For.
+  if (process.env.TRUST_PROXY || process.env.VERCEL) app.set('trust proxy', 1);
   app.use(helmet());
 
   const origins = config.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
@@ -42,7 +45,7 @@ export function createApp(
   app.use((req, res, next) => {
     const start = Date.now();
     res.on('finish', () => {
-      const path = req.path.replace(/\/watch\/[^/]+/, '/watch/:token');
+      const path = req.path.replace(/\/(watch|track)\/[^/]+/, '/$1/:token');
       if (process.env.NODE_ENV !== 'test') console.log(`${req.method} ${path} ${res.statusCode} ${Date.now() - start}ms`);
     });
     next();
@@ -57,6 +60,7 @@ export function createApp(
 
   // Public routes first (no sign-in), then authenticated ones.
   app.use('/v1', watchRoutes(db));
+  app.use('/v1', internalRoutes(db, config.CRON_SECRET));
   // Public (the background service has no sign-in): keep it before the signed-in routers.
   app.use('/v1', trackRoutes(db));
   app.use('/v1', profileRoutes(db, photos));

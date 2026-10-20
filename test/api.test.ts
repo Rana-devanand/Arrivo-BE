@@ -800,3 +800,15 @@ describe('background tracking and contact photos', () => {
     expect((await app.get('/v1/trusting').set(B)).body.items[0].name).toBe('alice');
   });
 });
+
+describe('scheduler endpoint (for hosts without timers)', () => {
+  it('does not exist without a secret, and needs the secret when set', async () => {
+    expect((await api.get('/v1/internal/overdue')).status).toBe(404);
+    const app = request(createApp(db, { ...cfg, CRON_SECRET: 'a-long-enough-secret-123' }));
+    expect((await app.get('/v1/internal/overdue')).status).toBe(401);
+    expect((await app.get('/v1/internal/overdue').set('Authorization', 'Bearer wrong')).status).toBe(401);
+    const ok = await app.get('/v1/internal/overdue').set('Authorization', 'Bearer a-long-enough-secret-123');
+    expect(ok.status).toBe(200);
+    expect(ok.body.markedOverdue).toBe(0);
+  });
+});

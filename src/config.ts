@@ -13,6 +13,8 @@ const schema = z
     ENABLE_DEV_ROUTES: z.enum(['true', 'false']).default('false'),
     WATCH_BASE_URL: z.string().default('https://arrivo.app/w'),
     RESEND_API_KEY: z.string().optional(),
+    /** Lets a scheduler call GET /v1/internal/overdue (for hosts without timers, e.g. Vercel). */
+    CRON_SECRET: z.string().min(16).optional(),
     GOOGLE_PLACES_API_KEY: z.string().optional(),
     /** Routes API key. Falls back to GOOGLE_PLACES_API_KEY (one server key can serve both). */
     GOOGLE_ROUTES_API_KEY: z.string().optional(),

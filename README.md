@@ -186,3 +186,14 @@ Errors look like `{ "error": { "code", "message", "details?" } }`.
 - The app uploading live location (the endpoint is ready; needs the phone's
   background location code).
 - Subscriptions and billing.
+
+## Deploy on Vercel
+
+The repo includes `vercel.json` and `api/index.js`. Vercel runs the API as one serverless function (no port, no timers).
+
+1. Import the `backend` folder as the project root. Build command `npm run build` (already in vercel.json).
+2. In Project Settings > Environment Variables set: `NODE_ENV=production`, `DB_DRIVER=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WATCH_BASE_URL`, and the optional keys (`GOOGLE_PLACES_API_KEY`, `RESEND_API_KEY`, `CLOUDINARY_*`). If any required one is missing the function fails at start (500 FUNCTION_INVOCATION_FAILED); the Vercel logs name the missing setting.
+3. Check `https://<project>.vercel.app/health`.
+4. Overdue journeys: Vercel has no timer, so set `CRON_SECRET` (16+ characters) and call `GET /v1/internal/overdue` every minute with `Authorization: Bearer <CRON_SECRET>` (Vercel Cron on a paid plan, or any pinger).
+
+Serverless limits to know: a function can run for at most the plan limit, rate limiting is per instance, and the first request after a quiet period is slower (cold start).
