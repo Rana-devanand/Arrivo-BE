@@ -1,5 +1,6 @@
 import type { Db } from '../db/types.js';
 import type { Journey, LocationPoint } from '../types.js';
+import { errorText, logError, logInfo } from './log.js';
 import { clock, notifyFollowers } from './notify.js';
 import type { AreaInfo, PlacesProvider } from './places.js';
 
@@ -68,8 +69,9 @@ export async function maybeSendProgress(
     if (point) {
       try {
         where = describePlace(await places.area(point.lat, point.lng), journey.distanceKm);
-      } catch {
+      } catch (e) {
         // No place service or it failed: the update still goes, without a place.
+        logError(`[progress] place lookup failed, sending without a place: ${errorText(e)}`);
       }
     }
 
@@ -80,7 +82,11 @@ export async function maybeSendProgress(
       body: `Heading to ${journey.destinationName}, arriving ${clock(journey.expectedArrival)}. Tap to see the live map.`,
       data: { journeyId: journey.id },
     });
+    // What went out, without the place itself: scope says how detailed it was.
+    const scope = !where ? 'none' : journey.distanceKm > 0 && journey.distanceKm < LOCAL_TRIP_KM ? 'local' : 'regional';
+    const why = !point ? ' (position too old)' : '';
+    logInfo(`[progress] update sent journey=${journey.id} every=${minutes}min contacts=${journey.contactIds.length} place=${scope}${why}`);
   } catch (e) {
-    console.error('[progress] could not send an update:', e instanceof Error ? e.message : 'unknown error');
+    logError(`[progress] could not send an update: ${errorText(e)}`);
   }
 }

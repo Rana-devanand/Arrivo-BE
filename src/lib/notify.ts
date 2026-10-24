@@ -1,5 +1,6 @@
 import type { Db } from '../db/types.js';
 import type { NewNotification } from '../types.js';
+import { errorText, logError, logInfo } from './log.js';
 import { getPushSender } from './push.js';
 
 /**
@@ -11,7 +12,7 @@ export async function notifyUser(db: Db, userId: string, n: NewNotification): Pr
   try {
     await db.createNotification(userId, n);
   } catch (e) {
-    console.error('[notify] could not save a notification:', e instanceof Error ? e.message : 'unknown error');
+    logError(`[notify] could not save a notification: ${errorText(e)}`);
   }
   await pushToUser(db, userId, n);
 }
@@ -21,7 +22,11 @@ async function pushToUser(db: Db, userId: string, n: NewNotification): Promise<v
   if (!sender) return;
   try {
     const tokens = await db.listPushTokens(userId);
-    if (tokens.length === 0) return;
+    if (tokens.length === 0) {
+      // The usual reason a contact got nothing: they never opened the app on a phone that registered.
+      logInfo(`[push] skip type=${n.type} reason=no_devices`);
+      return;
+    }
     // Only short text fields go out: FCM data values must be strings, and the
     // in-app list already holds the full payload.
     const data: Record<string, string> = { type: n.type };
@@ -30,8 +35,9 @@ async function pushToUser(db: Db, userId: string, n: NewNotification): Promise<v
     }
     const dead = await sender.send(tokens, { title: n.title, body: n.body, data });
     await Promise.all(dead.map((t) => db.deletePushToken(t)));
+    if (dead.length > 0) logInfo(`[push] removed ${dead.length} dead device(s)`);
   } catch (e) {
-    console.error('[notify] push failed:', e instanceof Error ? e.message : 'unknown error');
+    logError(`[push] failed type=${n.type} reason=${errorText(e)}`);
   }
 }
 
@@ -46,7 +52,7 @@ export async function notifyFollowers(
     const ids = await db.listContactUserIds(ownerId, contactIds);
     await Promise.all(ids.map((id) => notifyUser(db, id, n)));
   } catch (e) {
-    console.error('[notify] could not reach followers:', e instanceof Error ? e.message : 'unknown error');
+    logError(`[notify] could not reach followers: ${errorText(e)}`);
   }
 }
 

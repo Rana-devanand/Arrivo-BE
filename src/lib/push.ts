@@ -1,6 +1,8 @@
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 
+import { logInfo } from './log.js';
+
 export interface PushMessage {
   title: string;
   body: string;
@@ -40,10 +42,15 @@ export function fcmSender(serviceAccount: string): PushSender {
         android: { priority: 'high', notification: { channelId: 'arrivo_alerts' } },
       });
       const dead: string[] = [];
+      const errors = new Map<string, number>();
       res.responses.forEach((r, i) => {
         const token = tokens[i];
+        if (!r.success && r.error) errors.set(r.error.code, (errors.get(r.error.code) ?? 0) + 1);
         if (token && !r.success && r.error && DEAD_TOKEN_CODES.has(r.error.code)) dead.push(token);
       });
+      // Counts and Firebase error codes only: never the tokens or the text sent.
+      const why = errors.size ? ` errors=${[...errors].map(([code, n]) => `${code}x${n}`).join(',')}` : '';
+      logInfo(`[push] fcm type=${msg.data?.type ?? '-'} sent=${res.successCount} failed=${res.failureCount}${why}`);
       return dead;
     },
   };

@@ -125,6 +125,22 @@ Run them in order with `supabase db push` (from `backend/`):
 | `FIREBASE_SERVICE_ACCOUNT` | | enables push notifications (Firebase Cloud Messaging). The service account key as JSON or base64. Empty = in-app notifications only. Phones register with `POST /v1/devices` and leave with `DELETE /v1/devices` |
 | `MAIL_FROM` | `Arrivo <invites@tryarrivo.com>` | sender; the domain must be verified in Resend |
 
+## Logs: did the notification go out?
+
+Search the log for `[push]` and `[progress]`. Lines never contain tokens, coordinates, place names or emails, only ids, counts and Firebase error codes. On Vercel: Project > Logs (or `vercel logs <deployment-url>`).
+
+| Line | Meaning |
+|---|---|
+| `[push] on: ...` / `[push] off: FIREBASE_SERVICE_ACCOUNT is not set` | Start-up. If it says off, no push is ever sent. |
+| `[push] fcm type=journey_progress sent=1 failed=0` | Firebase accepted it for 1 phone. |
+| `[push] fcm type=... sent=0 failed=1 errors=messaging/registration-token-not-registered x1` | Firebase refused. The error code says why; dead devices are removed. |
+| `[push] skip type=... reason=no_devices` | The contact has no registered phone (they have not opened the app and allowed notifications). |
+| `[push] failed type=... reason=<code>` | Could not call Firebase at all (bad or missing key, network). |
+| `[progress] update sent journey=<id> every=15min contacts=2 place=local` | A progress update was sent. `place` is `local` (road and area), `regional` (city and state) or `none` (no place named). |
+| `[progress] place lookup failed, sending without a place: ...` | The Geocoding call failed; the update still went, without a place. |
+
+"sent" means Firebase accepted the message, not that the phone showed it.
+
 ## API
 
 All routes are under `/v1` and need `Authorization: Bearer <token>`, except

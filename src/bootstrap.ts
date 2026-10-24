@@ -8,6 +8,7 @@ import type { Db } from './db/types.js';
 import { cloudinary, noCloudinary } from './lib/cloudinary.js';
 import { noopMailer, resendMailer } from './lib/mailer.js';
 import { googlePlaces, noPlaces } from './lib/places.js';
+import { errorText, logError, logInfo } from './lib/log.js';
 import { fcmSender, setPushSender } from './lib/push.js';
 import { googleRouting, noRouting } from './lib/routing.js';
 
@@ -29,9 +30,12 @@ export function createFromEnv(): { app: Express; db: Db; config: Config } {
   if (config.FIREBASE_SERVICE_ACCOUNT) {
     try {
       setPushSender(fcmSender(config.FIREBASE_SERVICE_ACCOUNT));
+      logInfo('[push] on: Firebase push notifications are enabled');
     } catch (e) {
-      console.error('[push] FIREBASE_SERVICE_ACCOUNT is not valid, push is off:', e instanceof Error ? e.message : 'unknown error');
+      logError(`[push] off: FIREBASE_SERVICE_ACCOUNT is not valid (${errorText(e)})`);
     }
+  } else {
+    logInfo('[push] off: FIREBASE_SERVICE_ACCOUNT is not set');
   }
   const routesKey =config.GOOGLE_ROUTES_API_KEY || config.GOOGLE_PLACES_API_KEY;
   const routing = routesKey ? googleRouting(routesKey) : noRouting;
