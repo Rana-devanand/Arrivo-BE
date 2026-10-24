@@ -3,3 +3,10 @@ dist/
 .env
 .env.*
 !.env.example
+
+.vercel
+.env*
+
+# Firebase service account keys (full admin access to the project)
+*-firebase-adminsdk-*.json
+firebase-service-account*.json

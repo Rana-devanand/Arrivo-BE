@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { MemoryDb } from '../src/db/memoryDb.js';
+import { setPushSender } from '../src/lib/push.js';
 
 const cfg = {
   CORS_ORIGINS: '',
@@ -353,6 +354,67 @@ describe('account and devices', () => {
     const res = await api.post('/v1/devices').set(A).send({ platform: 'android', pushToken: 'x'.repeat(40) });
     expect(res.status).toBe(204);
     expect((await api.post('/v1/devices').set(A).send({ platform: 'tv', pushToken: 'x'.repeat(40) })).status).toBe(400);
+  });
+
+  describe('push notifications (FR-NOT)', () => {
+    const tokenA = 'a'.repeat(40);
+    const tokenB = 'b'.repeat(40);
+    let sent: { tokens: string[]; title: string; data?: Record<string, string> }[];
+    let dead: string[];
+
+    beforeEach(() => {
+      sent = [];
+      dead = [];
+      setPushSender({
+        async send(tokens, msg) {
+          sent.push({ tokens, title: msg.title, data: msg.data });
+          return dead;
+        },
+      });
+    });
+    afterEach(() => setPushSender(null));
+
+    async function bobFollowsAlice() {
+      const c = (await api.post('/v1/contacts').set(A).send({ name: 'Bob', phone: '+1 202 555 0188' })).body;
+      await api.post('/v1/invitations/' + c.inviteCode + '/accept').set(B);
+      await api.post('/v1/devices').set(A).send({ platform: 'android', pushToken: tokenA });
+      await api.post('/v1/devices').set(B).send({ platform: 'android', pushToken: tokenB });
+      return c.id as string;
+    }
+
+    it('pushes a started journey to the contact phone only, not the traveller', async () => {
+      const c = await bobFollowsAlice();
+      await api.post('/v1/journeys').set(A).send(journeyBody([c]));
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.tokens).toEqual([tokenB]);
+      expect(JSON.stringify(sent[0])).not.toMatch(/lat|lng|18\.5/);
+    });
+
+    it('forgets tokens Firebase reports as dead', async () => {
+      const c = await bobFollowsAlice();
+      expect(await db.listPushTokens('dev-bob')).toEqual([tokenB]);
+      dead = [tokenB];
+      await api.post('/v1/journeys').set(A).send(journeyBody([c]));
+      expect(await db.listPushTokens('dev-bob')).toEqual([]);
+    });
+
+    it('lets a user remove only their own token on sign-out', async () => {
+      await bobFollowsAlice();
+      expect((await api.delete('/v1/devices').set(A).send({ pushToken: tokenB })).status).toBe(204);
+      expect(await db.listPushTokens('dev-bob')).toEqual([tokenB]);
+      expect((await api.delete('/v1/devices').set(B).send({ pushToken: tokenB })).status).toBe(204);
+      expect(await db.listPushTokens('dev-bob')).toEqual([]);
+    });
+
+    it('does not break the action when sending fails', async () => {
+      const c = await bobFollowsAlice();
+      setPushSender({
+        async send() {
+          throw new Error('fcm down');
+        },
+      });
+      expect((await api.post('/v1/journeys').set(A).send(journeyBody([c]))).status).toBe(201);
+    });
   });
 });
 

@@ -643,4 +643,15 @@ export class SupabaseDb implements Db {
       'save device',
     );
   }
+
+  async listPushTokens(ownerId: string): Promise<string[]> {
+    const res = await this.sb.from('devices').select('push_token').eq('owner_id', ownerId);
+    return (check(res, 'list devices') as Row[]).map((r) => r.push_token as string);
+  }
+
+  async deletePushToken(pushToken: string, ownerId?: string): Promise<void> {
+    let q = this.sb.from('devices').delete().eq('push_token', pushToken);
+    if (ownerId) q = q.eq('owner_id', ownerId);
+    check(await q, 'remove device');
+  }
 }

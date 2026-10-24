@@ -21,6 +21,8 @@ const schema = z
     CLOUDINARY_CLOUD_NAME: z.string().optional(),
     CLOUDINARY_API_KEY: z.string().optional(),
     CLOUDINARY_API_SECRET: z.string().optional(),
+    /** Firebase service account key (JSON or base64 of it). Without it, push notifications are off. */
+    FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
     MAIL_FROM: z.string().default('Arrivo <invites@tryarrivo.com>'),
   })
   .superRefine((v, ctx) => {

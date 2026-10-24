@@ -387,6 +387,15 @@ export class MemoryDb implements Db {
   async upsertDevice(ownerId: string, platform: 'ios' | 'android' | 'web', pushToken: string): Promise<void> {
     this.devices.set(pushToken, { ownerId, platform });
   }
+
+  async listPushTokens(ownerId: string): Promise<string[]> {
+    return [...this.devices].filter(([, d]) => d.ownerId === ownerId).map(([token]) => token);
+  }
+
+  async deletePushToken(pushToken: string, ownerId?: string): Promise<void> {
+    const d = this.devices.get(pushToken);
+    if (d && (ownerId === undefined || d.ownerId === ownerId)) this.devices.delete(pushToken);
+  }
 }
 
 function strip<T extends { ownerId?: string }>(v: T): Omit<T, 'ownerId'> {

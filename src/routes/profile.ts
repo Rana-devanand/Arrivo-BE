@@ -68,5 +68,12 @@ export function profileRoutes(db: Db, photos: Cloudinary): Router {
     res.status(204).end();
   });
 
+  /** Sign-out: stop pushing to this phone. Only removes the caller's own token. */
+  r.delete('/devices', async (req, res) => {
+    const { pushToken } = parse(z.object({ pushToken: deviceSchema.shape.pushToken }), req.body);
+    await db.deletePushToken(pushToken, userOf(req).id);
+    res.status(204).end();
+  });
+
   return r;
 }

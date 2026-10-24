@@ -8,6 +8,7 @@ import type { Db } from './db/types.js';
 import { cloudinary, noCloudinary } from './lib/cloudinary.js';
 import { noopMailer, resendMailer } from './lib/mailer.js';
 import { googlePlaces, noPlaces } from './lib/places.js';
+import { fcmSender, setPushSender } from './lib/push.js';
 import { googleRouting, noRouting } from './lib/routing.js';
 
 /** Builds the API from environment settings. Shared by the long-running server and Vercel. */
@@ -25,7 +26,14 @@ export function createFromEnv(): { app: Express; db: Db; config: Config } {
     config.CLOUDINARY_CLOUD_NAME && config.CLOUDINARY_API_KEY && config.CLOUDINARY_API_SECRET
       ? cloudinary({ cloudName: config.CLOUDINARY_CLOUD_NAME, apiKey: config.CLOUDINARY_API_KEY, apiSecret: config.CLOUDINARY_API_SECRET })
       : noCloudinary;
-  const routesKey = config.GOOGLE_ROUTES_API_KEY || config.GOOGLE_PLACES_API_KEY;
+  if (config.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      setPushSender(fcmSender(config.FIREBASE_SERVICE_ACCOUNT));
+    } catch (e) {
+      console.error('[push] FIREBASE_SERVICE_ACCOUNT is not valid, push is off:', e instanceof Error ? e.message : 'unknown error');
+    }
+  }
+  const routesKey =config.GOOGLE_ROUTES_API_KEY || config.GOOGLE_PLACES_API_KEY;
   const routing = routesKey ? googleRouting(routesKey) : noRouting;
 
   return { app: createApp(db, config, mailer, places, photos, routing), db, config };

@@ -122,6 +122,7 @@ Run them in order with `supabase db push` (from `backend/`):
 | `GOOGLE_ROUTES_API_KEY` | falls back to `GOOGLE_PLACES_API_KEY` | Routes API key for distance, time and the path on the map. Without it, trips are straight-line estimates |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | | enables profile photos. The server signs each upload, the phone uploads straight to Cloudinary |
 | `RESEND_API_KEY` | | enables invitation emails (Resend). Empty = no email, code sharing only |
+| `FIREBASE_SERVICE_ACCOUNT` | | enables push notifications (Firebase Cloud Messaging). The service account key as JSON or base64. Empty = in-app notifications only. Phones register with `POST /v1/devices` and leave with `DELETE /v1/devices` |
 | `MAIL_FROM` | `Arrivo <invites@tryarrivo.com>` | sender; the domain must be verified in Resend |
 
 ## API

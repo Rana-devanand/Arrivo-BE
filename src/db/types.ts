@@ -105,6 +105,9 @@ export interface Db {
   clearSafetyTimer(ownerId: string): Promise<void>;
 
   upsertDevice(ownerId: string, platform: 'ios' | 'android' | 'web', pushToken: string): Promise<void>;
+  listPushTokens(ownerId: string): Promise<string[]>;
+  /** Removes the token. With [ownerId] only that person's copy goes (sign-out). */
+  deletePushToken(pushToken: string, ownerId?: string): Promise<void>;
 
   /** Optional: a hint shown to the client when a token is rejected. */
   rejectHint?(token: string): string | undefined;
