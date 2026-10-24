@@ -25,8 +25,22 @@ export interface SearchOptions {
   language: 'en' | 'hi';
 }
 
+/**
+ * The coarse place around a point, for "Alex is near ..." updates. Only road,
+ * area, city and state: never a house number, shop or restaurant name.
+ */
+export interface AreaInfo {
+  road?: string;
+  /** Neighbourhood or locality inside the city, e.g. "Koregaon Park". */
+  neighbourhood?: string;
+  city?: string;
+  state?: string;
+}
+
 export interface PlacesProvider {
   readonly enabled: boolean;
+  /** Road, area, city and state at a point. */
+  area(lat: number, lng: number): Promise<AreaInfo>;
   search(opts: SearchOptions): Promise<PlaceSuggestion[]>;
   details(placeId: string, sessionToken?: string, language?: 'en' | 'hi'): Promise<PlaceDetails>;
   /** Pin drop / current location: turns coordinates into an address. */
@@ -39,6 +53,9 @@ const unavailable = () =>
 /** Used when no Google key is configured. */
 export const noPlaces: PlacesProvider = {
   enabled: false,
+  area: async () => {
+    throw unavailable();
+  },
   search: async () => {
     throw unavailable();
   },
@@ -80,6 +97,7 @@ class Ttl<T> {
 export function googlePlaces(apiKey: string): PlacesProvider {
   const searchCache = new Ttl<PlaceSuggestion[]>(60_000);
   const reverseCache = new Ttl<PlaceDetails>(10 * 60_000);
+  const areaCache = new Ttl<AreaInfo>(10 * 60_000);
 
   async function call(url: string, init: RequestInit & { headers?: Record<string, string> }): Promise<unknown> {
     let res: Response;
@@ -103,6 +121,38 @@ export function googlePlaces(apiKey: string): PlacesProvider {
 
   return {
     enabled: true,
+
+    async area(lat, lng) {
+      // About 100 m: close enough for "near", and repeated lookups cost nothing.
+      const key = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+      const hit = areaCache.get(key);
+      if (hit) return hit;
+      const qs = new URLSearchParams({ latlng: `${lat},${lng}`, language: 'en', key: apiKey });
+      const data = (await call(`https://maps.googleapis.com/maps/api/geocode/json?${qs}`, { method: 'GET', headers: {} })) as {
+        status?: string;
+        results?: { address_components: { long_name: string; types: string[] }[] }[];
+      };
+      if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+        console.error(`[places] geocoding status ${data.status}`);
+        throw new AppError(502, 'places_error', 'Could not read this location. Try again in a moment.');
+      }
+      // Results run from specific to broad; take each field from the first one that has it.
+      const find = (...types: string[]) => {
+        for (const r of (data.results ?? []).slice(0, 6)) {
+          const c = r.address_components.find((x) => types.some((t) => x.types.includes(t)));
+          if (c) return c.long_name;
+        }
+        return undefined;
+      };
+      const out: AreaInfo = {
+        road: find('route'),
+        neighbourhood: find('sublocality_level_1', 'sublocality', 'neighborhood'),
+        city: find('locality', 'administrative_area_level_3', 'administrative_area_level_2'),
+        state: find('administrative_area_level_1'),
+      };
+      areaCache.set(key, out);
+      return out;
+    },
 
     async search({ query, sessionToken, near, language }) {
       const key = `${query.toLowerCase()}|${language}|${near ? `${near.lat.toFixed(2)},${near.lng.toFixed(2)}` : ''}`;

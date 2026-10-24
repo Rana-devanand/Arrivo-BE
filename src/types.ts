@@ -49,6 +49,7 @@ export type NotificationType =
   | 'journey_arrived'
   | 'journey_cancelled'
   | 'journey_delayed'
+  | 'journey_progress'
   | 'attachment'
   | 'sos';
 
@@ -124,8 +125,16 @@ export interface Journey {
   vehicleImageUrl: string | null;
   /** Private key for the background service. Only the owner ever receives it. */
   trackToken: string | null;
+  /** Minutes between "on the way" updates to the contacts, or null for none. */
+  updateIntervalMinutes: number | null;
+  /** When the last update went out (the start time before the first one). */
+  lastProgressAt: string | null;
   contactIds: string[];
 }
+
+/** The traveller picks any interval between these (the app also offers presets). */
+export const MIN_PROGRESS_MINUTES = 10;
+export const MAX_PROGRESS_MINUTES = 12 * 60;
 
 export interface NewJourney {
   destinationName: string;
@@ -147,6 +156,7 @@ export interface NewJourney {
   routeSteps: PlannedStep[] | null;
   vehicleImageUrl: string | null;
   trackToken: string | null;
+  updateIntervalMinutes: number | null;
   contactIds: string[];
 }
 

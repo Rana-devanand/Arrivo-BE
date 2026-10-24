@@ -109,6 +109,8 @@ const toJourney = (r: Row, contactIds: string[]): Journey => ({
   routeSteps: r.route_steps ?? null,
   vehicleImageUrl: r.vehicle_image_url ?? null,
   trackToken: r.track_token ?? null,
+  updateIntervalMinutes: r.update_interval_minutes ?? null,
+  lastProgressAt: r.last_progress_at ?? null,
   contactIds,
 });
 
@@ -481,6 +483,9 @@ export class SupabaseDb implements Db {
         route_steps: input.routeSteps,
         vehicle_image_url: input.vehicleImageUrl,
         track_token: input.trackToken,
+        update_interval_minutes: input.updateIntervalMinutes,
+        // The first update comes one interval after the start.
+        last_progress_at: input.updateIntervalMinutes ? new Date().toISOString() : null,
       })
       .select('*')
       .single();
@@ -495,6 +500,14 @@ export class SupabaseDb implements Db {
       throw new AppError(500, 'db_error', 'create journey failed', { reason: lk.error.message });
     }
     return toJourney(row, input.contactIds);
+  }
+
+  async claimProgressUpdate(journeyId: string, previous: string | null, nowIso: string): Promise<boolean> {
+    // Compare-and-swap on the previous value: only one of two simultaneous uploads wins.
+    let q = this.sb.from('journeys').update({ last_progress_at: nowIso }).eq('id', journeyId);
+    q = previous === null ? q.is('last_progress_at', null) : q.eq('last_progress_at', previous);
+    const rows = check(await q.select('id'), 'claim progress update') as Row[];
+    return rows.length === 1;
   }
 
   async getJourney(ownerId: string, id: string): Promise<Journey | null> {

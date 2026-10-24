@@ -8,9 +8,11 @@ import type { Db } from '../db/types.js';
 import type { Cloudinary } from '../lib/cloudinary.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { clock, notifyFollowers } from '../lib/notify.js';
+import type { PlacesProvider } from '../lib/places.js';
+import { maybeSendProgress } from '../lib/progress.js';
 import { requireAuth, userOf } from '../middleware/auth.js';
 import { parse } from '../middleware/errors.js';
-import type { Journey, JourneyStatus } from '../types.js';
+import { MAX_PROGRESS_MINUTES, MIN_PROGRESS_MINUTES, type Journey, type JourneyStatus } from '../types.js';
 
 const createSchema = z.object({
   destinationName: z.string().trim().min(1).max(160),
@@ -48,6 +50,8 @@ const createSchema = z.object({
   autoArrival: z.boolean().default(true),
   notifyOnStart: z.boolean().default(true),
   createWatchLink: z.boolean().default(false),
+  /** Minutes between "on the way" updates to the contacts. Null = no updates. */
+  updateIntervalMinutes: z.number().int().min(MIN_PROGRESS_MINUTES).max(MAX_PROGRESS_MINUTES).nullable().default(null),
 });
 
 const listSchema = z.object({
@@ -75,7 +79,7 @@ export const pointsSchema = z.object({
 
 const STATUSES: JourneyStatus[] = ['active', 'overdue', 'completed', 'cancelled'];
 
-export function journeyRoutes(db: Db, opts: { watchBaseUrl: string; photos: Cloudinary }): Router {
+export function journeyRoutes(db: Db, opts: { watchBaseUrl: string; photos: Cloudinary; places: PlacesProvider }): Router {
   const r = Router();
   r.use(requireAuth(db));
 
@@ -134,6 +138,7 @@ export function journeyRoutes(db: Db, opts: { watchBaseUrl: string; photos: Clou
       routeSteps: body.routeSteps ?? null,
       vehicleImageUrl: body.vehicleImageUrl ?? null,
       trackToken: randomBytes(24).toString('base64url'),
+      updateIntervalMinutes: body.updateIntervalMinutes,
       contactIds,
     });
     const watch = body.createWatchLink ? await createLink(journey, user.id) : null;
@@ -247,6 +252,7 @@ export function journeyRoutes(db: Db, opts: { watchBaseUrl: string; photos: Clou
     const sane = points.filter((p) => new Date(p.recordedAt).getTime() <= limit);
     if (sane.length === 0) throw badRequest('Location timestamps are in the future');
     await db.addLocationPoints(id, sane);
+    await maybeSendProgress(db, opts.places, j, user.id, sane);
     res.status(202).json({ accepted: sane.length });
   });
 

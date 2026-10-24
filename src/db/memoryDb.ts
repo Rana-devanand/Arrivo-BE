@@ -281,9 +281,17 @@ export class MemoryDb implements Db {
       startedAt: new Date().toISOString(),
       arrivedAt: null,
       endedAt: null,
+      lastProgressAt: input.updateIntervalMinutes ? new Date().toISOString() : null,
     };
     this.journeys.set(j.id, j);
     return strip(j);
+  }
+
+  async claimProgressUpdate(journeyId: string, previous: string | null, nowIso: string): Promise<boolean> {
+    const j = this.journeys.get(journeyId);
+    if (!j || j.lastProgressAt !== previous) return false;
+    j.lastProgressAt = nowIso;
+    return true;
   }
 
   async getJourney(ownerId: string, id: string): Promise<Journey | null> {

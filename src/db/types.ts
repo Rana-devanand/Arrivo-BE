@@ -90,6 +90,11 @@ export interface Db {
   /** Applies the patch only if the journey is currently in one of `fromStatuses`. Returns null otherwise. */
   updateJourney(ownerId: string, id: string, patch: JourneyPatch, fromStatuses: JourneyStatus[]): Promise<Journey | null>;
   markOverdue(nowIso: string): Promise<number>;
+  /**
+   * Takes the right to send the next progress update: succeeds only if
+   * `lastProgressAt` still equals [previous], so concurrent callers send once.
+   */
+  claimProgressUpdate(journeyId: string, previous: string | null, nowIso: string): Promise<boolean>;
 
   addLocationPoints(journeyId: string, points: LocationPoint[]): Promise<void>;
   getLastLocation(journeyId: string): Promise<LocationPoint | null>;

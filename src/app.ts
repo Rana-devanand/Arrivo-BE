@@ -62,14 +62,14 @@ export function createApp(
   app.use('/v1', watchRoutes(db));
   app.use('/v1', internalRoutes(db, config.CRON_SECRET));
   // Public (the background service has no sign-in): keep it before the signed-in routers.
-  app.use('/v1', trackRoutes(db));
+  app.use('/v1', trackRoutes(db, places));
   app.use('/v1', profileRoutes(db, photos));
   app.use('/v1', contactRoutes(db, { devRoutes: config.ENABLE_DEV_ROUTES === 'true', mailer }));
   app.use('/v1', invitationRoutes(db));
   app.use('/v1', placeRoutes(db, places));
   app.use('/v1', planRoutes(db, routing));
   app.use('/v1', notificationRoutes(db));
-  app.use('/v1', journeyRoutes(db, { watchBaseUrl: config.WATCH_BASE_URL, photos }));
+  app.use('/v1', journeyRoutes(db, { watchBaseUrl: config.WATCH_BASE_URL, photos, places }));
   app.use('/v1', safetyRoutes(db));
 
   app.use(notFoundHandler);

@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { MemoryDb } from '../src/db/memoryDb.js';
+import { noPlaces, type AreaInfo } from '../src/lib/places.js';
+import { describePlace } from '../src/lib/progress.js';
 import { setPushSender } from '../src/lib/push.js';
 
 const cfg = {
@@ -415,6 +417,144 @@ describe('account and devices', () => {
       });
       expect((await api.post('/v1/journeys').set(A).send(journeyBody([c]))).status).toBe(201);
     });
+
+    describe('progress updates (FR-NOT-09)', () => {
+      const point = () => ({ points: [{ lat: 18.5204, lng: 73.8567, recordedAt: new Date().toISOString() }] });
+      const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+      let area: AreaInfo;
+      let areaFails: boolean;
+      beforeEach(() => {
+        area = { road: 'MG Road', neighbourhood: 'Koregaon Park', city: 'Pune', state: 'Maharashtra' };
+        areaFails = false;
+        const places = {
+          ...noPlaces,
+          enabled: true,
+          area: async () => {
+            if (areaFails) throw new Error('down');
+            return area;
+          },
+        };
+        api = request(createApp(db, cfg, undefined, places));
+      });
+
+      async function startWithInterval(interval: number | null, distanceKm = 0) {
+        const c = await bobFollowsAlice();
+        const res = await api
+          .post('/v1/journeys')
+          .set(A)
+          .send(journeyBody([c], { updateIntervalMinutes: interval, distanceKm }));
+        expect(res.status).toBe(201);
+        sent.length = 0; // forget the "journey started" push
+        return res.body as { id: string; trackToken: string };
+      }
+
+      it('sends nothing when the traveller chose no updates', async () => {
+        const j = await startWithInterval(null);
+        db.journeys.get(j.id)!.lastProgressAt = minutesAgo(500);
+        await api.post(`/v1/journeys/${j.id}/location`).set(A).send(point());
+        expect(sent).toHaveLength(0);
+      });
+
+      it('waits for the chosen interval, then updates the contact once', async () => {
+        const j = await startWithInterval(15);
+        await api.post(`/v1/journeys/${j.id}/location`).set(A).send(point());
+        expect(sent).toHaveLength(0); // 15 minutes have not passed
+
+        db.journeys.get(j.id)!.lastProgressAt = minutesAgo(16);
+        await api.post(`/v1/journeys/${j.id}/location`).set(A).send(point());
+        expect(sent).toHaveLength(1);
+        expect(sent[0]?.tokens).toEqual([tokenB]);
+        // Trip length unknown: the coarse wording (city and state).
+        expect(sent[0]?.title).toMatch(/near Pune, Maharashtra/);
+        expect(sent[0]?.data?.journeyId).toBe(j.id);
+        // FR-NOT-11: no coordinates anywhere in what goes to the lock screen.
+        expect(JSON.stringify(sent[0])).not.toMatch(/18\.52|73\.85/);
+
+        // Another upload right away is not a second update.
+        await api.post(`/v1/journeys/${j.id}/location`).set(A).send(point());
+        expect(sent).toHaveLength(1);
+      });
+
+      it('also works from the background service (track token)', async () => {
+        const j = await startWithInterval(30);
+        db.journeys.get(j.id)!.lastProgressAt = minutesAgo(31);
+        const res = await api.post(`/v1/track/${j.trackToken}/location`).send(point());
+        expect(res.status).toBe(202);
+        expect(sent).toHaveLength(1);
+      });
+
+      it('sends one update when two uploads arrive at the same moment', async () => {
+        const j = await startWithInterval(15);
+        db.journeys.get(j.id)!.lastProgressAt = minutesAgo(20);
+        await Promise.all([
+          api.post(`/v1/journeys/${j.id}/location`).set(A).send(point()),
+          api.post(`/v1/journeys/${j.id}/location`).set(A).send(point()),
+        ]);
+        expect(sent).toHaveLength(1);
+      });
+
+      it('stays quiet while the journey is overdue', async () => {
+        const j = await startWithInterval(15);
+        db.journeys.get(j.id)!.lastProgressAt = minutesAgo(20);
+        db.journeys.get(j.id)!.status = 'overdue';
+        await api.post(`/v1/journeys/${j.id}/location`).set(A).send(point());
+        expect(sent).toHaveLength(0);
+      });
+
+      async function updateAfter(j: { id: string }, recordedAt = new Date().toISOString()) {
+        db.journeys.get(j.id)!.lastProgressAt = minutesAgo(20);
+        await api
+          .post(`/v1/journeys/${j.id}/location`)
+          .set(A)
+          .send({ points: [{ lat: 18.5204, lng: 73.8567, recordedAt }] });
+        return sent[0]?.title ?? '';
+      }
+
+      it('names the road and area on a short trip', async () => {
+        const j = await startWithInterval(15, 8);
+        expect(await updateAfter(j)).toMatch(/is near MG Road, Koregaon Park$/);
+      });
+
+      it('names only the city and state on a long trip', async () => {
+        const j = await startWithInterval(15, 400);
+        const title = await updateAfter(j);
+        expect(title).toMatch(/is near Pune, Maharashtra$/);
+        expect(title).not.toMatch(/MG Road|Koregaon/);
+      });
+
+      it('does not call an old position "now"', async () => {
+        const j = await startWithInterval(15, 8);
+        expect(await updateAfter(j, minutesAgo(30))).toMatch(/is on the way$/);
+      });
+
+      it('still sends the update when the place lookup fails', async () => {
+        const j = await startWithInterval(15, 8);
+        areaFails = true;
+        expect(await updateAfter(j)).toMatch(/is on the way$/);
+      });
+
+      it('accepts any interval from 10 minutes to 12 hours, and nothing outside', async () => {
+        const c = await bobFollowsAlice();
+        const start = (m: number) => api.post('/v1/journeys').set(A).send(journeyBody([c], { updateIntervalMinutes: m }));
+        expect((await start(5)).status).toBe(400);
+        expect((await start(721)).status).toBe(400);
+        expect((await start(45.5)).status).toBe(400);
+        const ok = await start(45); // a custom time, not one of the presets
+        expect(ok.status).toBe(201);
+        expect(ok.body.updateIntervalMinutes).toBe(45);
+      });
+
+      it('uses a custom interval to decide when to update', async () => {
+        const j = await startWithInterval(45);
+        db.journeys.get(j.id)!.lastProgressAt = minutesAgo(30);
+        await api.post(`/v1/journeys/${j.id}/location`).set(A).send(point());
+        expect(sent).toHaveLength(0); // 45 minutes not yet
+        db.journeys.get(j.id)!.lastProgressAt = minutesAgo(46);
+        await api.post(`/v1/journeys/${j.id}/location`).set(A).send(point());
+        expect(sent).toHaveLength(1);
+      });
+    });
   });
 });
 
@@ -479,9 +619,34 @@ describe('invite email and trusting list', () => {
   });
 });
 
+describe('describePlace (FR-NOT-09)', () => {
+  const area = { road: 'MG Road', neighbourhood: 'Koregaon Park', city: 'Pune', state: 'Maharashtra' };
+
+  it('uses road and area on a local trip, city and state on a long one', () => {
+    expect(describePlace(area, 8)).toBe('near MG Road, Koregaon Park');
+    expect(describePlace(area, 29.9)).toBe('near MG Road, Koregaon Park');
+    expect(describePlace(area, 30)).toBe('near Pune, Maharashtra');
+    expect(describePlace(area, 900)).toBe('near Pune, Maharashtra');
+  });
+
+  it('treats an unknown trip length as long, which reveals less', () => {
+    expect(describePlace(area, 0)).toBe('near Pune, Maharashtra');
+  });
+
+  it('skips "Unnamed Road" and falls back to the area', () => {
+    expect(describePlace({ ...area, road: 'Unnamed Road' }, 5)).toBe('near Koregaon Park');
+    expect(describePlace({ city: 'Pune' }, 5)).toBe('near Pune');
+  });
+
+  it('returns nothing when no place is known', () => {
+    expect(describePlace({}, 5)).toBeNull();
+  });
+});
+
 describe('places', () => {
   const fake = {
     enabled: true,
+    area: async () => ({}),
     search: async (o: { query: string }) => [{ placeId: 'p1', name: o.query, address: 'Pune, India', distanceMeters: 120 }],
     details: async () => ({ placeId: 'p1', name: 'Shivajinagar', address: 'Pune', lat: 18.53, lng: 73.85 }),
     reverse: async (lat: number, lng: number) => ({ placeId: '', name: 'Dropped pin', address: 'x', lat, lng }),
