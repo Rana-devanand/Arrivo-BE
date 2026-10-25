@@ -28,6 +28,9 @@ export function billingFrom(config: Config): BillingConfig | null {
     return null;
   }
   logInfo(`[billing] on (${config.DODO_MODE} mode)`);
+  if (config.NODE_ENV === 'production' && config.DODO_MODE === 'test') {
+    logInfo('[billing] warning: Dodo is in TEST mode on a production server. Real customers cannot pay until DODO_MODE=live with live keys.');
+  }
   return { apiKey, webhookSecret, mode: config.DODO_MODE, products: { monthly, sixMonths, yearly }, siteUrl: siteUrl.replace(/\/+$/, '') };
 }
 

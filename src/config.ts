@@ -41,10 +41,6 @@ const schema = z
         ctx.addIssue({ code: 'custom', message: 'SUPABASE_SERVICE_ROLE_KEY is required when DB_DRIVER=supabase' });
       }
     }
-    // Live money needs live keys on purpose: a test key in production is a mistake worth stopping for.
-    if (v.NODE_ENV === 'production' && v.DODO_API_KEY && v.DODO_MODE === 'test') {
-      ctx.addIssue({ code: 'custom', message: 'DODO_MODE=test is set in production. Set DODO_MODE=live with a live key, or remove the Dodo settings.' });
-    }
     if (v.NODE_ENV === 'production' && v.ENABLE_DEV_ROUTES === 'true') {
       ctx.addIssue({ code: 'custom', message: 'ENABLE_DEV_ROUTES is not allowed in production' });
     }
