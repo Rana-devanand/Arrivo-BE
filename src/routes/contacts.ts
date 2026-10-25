@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import type { Db } from '../db/types.js';
-import { badRequest, notFound } from '../lib/errors.js';
+import { LIMITS, PLAN_NAMES, planOf } from '../domain/plans.js';
+import { AppError, badRequest, notFound } from '../lib/errors.js';
 import { newInviteCode } from '../lib/inviteCode.js';
 import type { Mailer } from '../lib/mailer.js';
 import { requireAuth, userOf } from '../middleware/auth.js';
@@ -53,6 +54,20 @@ export function contactRoutes(db: Db, opts: { devRoutes: boolean; mailer: Mailer
       if (mine && sameNumber(mine, body.phone)) {
         throw badRequest('That is your own phone number. Invite someone else.');
       }
+    }
+    // Arrivo Free has room for one contact; Plus has more. People who already have more
+    // keep them, they just cannot add another.
+    const plan = await planOf(db, me.id);
+    const have = (await db.listContacts(me.id)).length;
+    if (have >= LIMITS[plan].contacts) {
+      throw new AppError(
+        403,
+        'plan_limit',
+        plan === 'free'
+          ? `${PLAN_NAMES.free} lets you add ${LIMITS.free.contacts} contact. Upgrade to ${PLAN_NAMES.plus} to add more.`
+          : `You can have up to ${LIMITS.plus.contacts} contacts. Remove one to add another.`,
+        { plan, limit: LIMITS[plan].contacts },
+      );
     }
     const contact = await db.createContact(userOf(req).id, {
       name: body.name,

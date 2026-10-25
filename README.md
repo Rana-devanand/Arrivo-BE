@@ -123,6 +123,9 @@ Run them in order with `supabase db push` (from `backend/`):
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | | enables profile photos. The server signs each upload, the phone uploads straight to Cloudinary |
 | `RESEND_API_KEY` | | enables invitation emails (Resend). Empty = no email, code sharing only |
 | `FIREBASE_SERVICE_ACCOUNT` | | enables push notifications (Firebase Cloud Messaging). The service account key as JSON or base64. Empty = in-app notifications only. Phones register with `POST /v1/devices` and leave with `DELETE /v1/devices` |
+| `SITE_URL` | | the Arrivo website. Checkout returns here (`/pricing/success`, `/pricing/cancelled`) and it is allowed by CORS |
+| `DODO_API_KEY` / `DODO_MODE` / `DODO_WEBHOOK_SECRET` | `test` | Dodo Payments. Mode is `test` or `live` (production refuses `test`). The webhook is `POST /v1/billing/webhook`. Empty = Plus cannot be bought |
+| `DODO_PRODUCT_PLUS_MONTHLY` / `_6_MONTHS` / `_YEARLY` | | the Dodo product id of each Arrivo Plus plan |
 | `MAIL_FROM` | `Arrivo <invites@tryarrivo.com>` | sender; the domain must be verified in Resend |
 
 ## Logs: did the notification go out?

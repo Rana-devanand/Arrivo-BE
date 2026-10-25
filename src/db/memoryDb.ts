@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   AuthUser,
+  BillingTicket,
+  Household,
+  PlanKey,
+  Subscription,
   Contact,
   ContactStatus,
   FollowedJourney,
@@ -394,6 +398,61 @@ export class MemoryDb implements Db {
 
   async upsertDevice(ownerId: string, platform: 'ios' | 'android' | 'web', pushToken: string): Promise<void> {
     this.devices.set(pushToken, { ownerId, platform });
+  }
+
+  subscriptions = new Map<string, Subscription>();
+  tickets = new Map<string, BillingTicket>();
+  checkouts: { userId: string; email: string; planKey: PlanKey; sessionId: string | null; at: string }[] = [];
+  households = new Map<string, Household>();
+
+  async getSubscription(userId: string): Promise<Subscription | null> {
+    return this.subscriptions.get(userId) ?? null;
+  }
+
+  async getSubscriptionByDodoId(id: string): Promise<Subscription | null> {
+    return [...this.subscriptions.values()].find((s) => s.dodoSubscriptionId === id) ?? null;
+  }
+
+  async upsertSubscription(sub: Subscription): Promise<void> {
+    this.subscriptions.set(sub.userId, { ...sub });
+  }
+
+  async createBillingTicket(t: BillingTicket): Promise<void> {
+    this.tickets.set(t.tokenHash, { ...t });
+  }
+
+  async getBillingTicket(tokenHash: string): Promise<BillingTicket | null> {
+    return this.tickets.get(tokenHash) ?? null;
+  }
+
+  async deleteExpiredBillingTickets(nowIso: string): Promise<void> {
+    for (const [k, t] of this.tickets) if (t.expiresAt < nowIso) this.tickets.delete(k);
+  }
+
+  async recordCheckout(c: { userId: string; email: string; planKey: PlanKey; sessionId: string | null }): Promise<void> {
+    this.checkouts.push({ ...c, at: new Date().toISOString() });
+  }
+
+  async findLatestCheckoutByEmail(email: string, sinceIso: string): Promise<{ userId: string; planKey: PlanKey } | null> {
+    const found = this.checkouts
+      .filter((c) => c.email.toLowerCase() === email.toLowerCase() && c.at >= sinceIso)
+      .sort((a, b) => b.at.localeCompare(a.at))[0];
+    return found ? { userId: found.userId, planKey: found.planKey } : null;
+  }
+
+  async getHousehold(ownerId: string): Promise<Household | null> {
+    const h = this.households.get(ownerId);
+    return h ? { ...h, contactIds: [...h.contactIds] } : null;
+  }
+
+  async saveHousehold(ownerId: string, name: string, contactIds: string[]): Promise<Household> {
+    const h: Household = { name, contactIds: [...new Set(contactIds)], updatedAt: new Date().toISOString() };
+    this.households.set(ownerId, h);
+    return { ...h, contactIds: [...h.contactIds] };
+  }
+
+  async deleteHousehold(ownerId: string): Promise<void> {
+    this.households.delete(ownerId);
   }
 
   async listPushTokens(ownerId: string): Promise<string[]> {

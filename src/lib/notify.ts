@@ -56,12 +56,18 @@ export async function notifyFollowers(
   }
 }
 
-/** "6:45 PM" for a notification text (India time, since that is where trips happen). */
-export function clock(iso: string): string {
-  return new Date(iso).toLocaleTimeString('en-IN', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-    timeZone: 'Asia/Kolkata',
-  });
+const IST = 'Asia/Kolkata';
+const dayKey = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: IST });
+
+/**
+ * "6:45 PM" for a notification text (India time, since that is where trips happen).
+ * A trip that ends on another day says which: "Tomorrow, 6:45 PM" or "Tue 28 Oct, 6:45 PM".
+ */
+export function clock(iso: string, now = new Date()): string {
+  const at = new Date(iso);
+  const time = at.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: IST });
+  if (dayKey(at) === dayKey(now)) return time;
+  if (dayKey(at) === dayKey(new Date(now.getTime() + 24 * 60 * 60 * 1000))) return `Tomorrow, ${time}`;
+  const date = at.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: IST });
+  return `${date}, ${time}`;
 }

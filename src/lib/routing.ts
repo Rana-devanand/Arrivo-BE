@@ -189,6 +189,9 @@ export async function planViaStations(
   };
 }
 
+const STATION_BOXES_TRAIN = [0.5, 1, 2, 3];
+const STATION_BOXES_METRO = [0.5, 1];
+
 /** Small time-boxed cache, so repeated taps do not repeat paid lookups. */
 function ttl<T>(ms: number) {
   const m = new Map<string, { at: number; v: T }>();
@@ -267,49 +270,90 @@ export function googleRouting(apiKey: string): RoutingProvider {
   const stationCache = ttl<Station[]>(15 * 60_000);
   const legCache = ttl<RoutePlan>(2 * 60_000);
 
-  async function nearbyStations(near: LatLng, mode: 'train' | 'metro'): Promise<Station[]> {
-    const key = `${near.lat.toFixed(3)},${near.lng.toFixed(3)}|${mode}`;
-    const hit = stationCache.get(key);
-    if (hit) return hit;
-    let res: Response;
+  /** One Places call. Returns the places, or none when the call fails (the caller then widens or gives up). */
+  async function placesCall(endpoint: 'searchNearby' | 'searchText', body: unknown): Promise<Record<string, any>[]> {
     try {
-      res = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+      const res = await fetch(`https://places.googleapis.com/v1/places:${endpoint}`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'X-Goog-Api-Key': apiKey,
           'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location',
         },
-        body: JSON.stringify({
-          includedTypes: mode === 'metro' ? ['subway_station', 'light_rail_station'] : ['train_station'],
-          maxResultCount: 10,
-          rankPreference: 'DISTANCE',
-          languageCode: 'en',
-          locationRestriction: { circle: { center: { latitude: near.lat, longitude: near.lng }, radius: mode === 'metro' ? 25_000 : 50_000 } },
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(8000),
       });
+      if (!res.ok) {
+        console.error(`[routes] station search (${endpoint}) returned ${res.status}`);
+        return [];
+      }
+      return ((await res.json()) as { places?: Record<string, any>[] }).places ?? [];
     } catch {
       return [];
     }
-    if (!res.ok) {
-      console.error(`[routes] station search returned ${res.status}`);
-      return [];
+  }
+
+  /**
+   * The closest stations to a place, nearest first. Looks within 50 km (25 km for
+   * metro) first. In a village or small town that may find none, so the search then
+   * widens step by step over a larger area. The person is always shown the nearest
+   * stations there are, however far, and chooses how to get there.
+   */
+  async function nearbyStations(near: LatLng, mode: 'train' | 'metro'): Promise<Station[]> {
+    const key = `${near.lat.toFixed(3)},${near.lng.toFixed(3)}|${mode}`;
+    const hit = stationCache.get(key);
+    if (hit) return hit;
+
+    const found = new Map<string, Station>();
+    const add = (places: Record<string, any>[]) => {
+      for (const p of places) {
+        if (!p.location) continue;
+        const lat = p.location.latitude as number;
+        const lng = p.location.longitude as number;
+        found.set((p.id as string) ?? `${lat},${lng}`, {
+          name: (p.displayName?.text ?? 'Station') as string,
+          address: (p.formattedAddress ?? '') as string,
+          lat,
+          lng,
+          placeId: p.id as string | undefined,
+          distanceMeters: Math.round(haversine(near, { lat, lng })),
+        });
+      }
+    };
+
+    add(
+      await placesCall('searchNearby', {
+        includedTypes: mode === 'metro' ? ['subway_station', 'light_rail_station'] : ['train_station'],
+        maxResultCount: 10,
+        rankPreference: 'DISTANCE',
+        languageCode: 'en',
+        locationRestriction: { circle: { center: { latitude: near.lat, longitude: near.lng }, radius: mode === 'metro' ? 25_000 : 50_000 } },
+      }),
+    );
+
+    // Half-widths in degrees of latitude (about 55 km each): up to roughly 330 km for trains.
+    for (const half of mode === 'metro' ? STATION_BOXES_METRO : STATION_BOXES_TRAIN) {
+      if (found.size >= 3) break;
+      add(
+        await placesCall('searchText', {
+          textQuery: mode === 'metro' ? 'metro station' : 'railway station',
+          includedType: mode === 'metro' ? 'subway_station' : 'train_station',
+          strictTypeFiltering: true,
+          maxResultCount: 20,
+          languageCode: 'en',
+          locationRestriction: {
+            rectangle: {
+              low: { latitude: near.lat - half, longitude: near.lng - half },
+              high: { latitude: near.lat + half, longitude: near.lng + half },
+            },
+          },
+        }),
+      );
     }
-    const data = (await res.json()) as { places?: Record<string, any>[] };
-    const out: Station[] = (data.places ?? [])
-      .filter((p) => p.location)
-      .map((p) => ({
-        name: (p.displayName?.text ?? 'Station') as string,
-        address: (p.formattedAddress ?? '') as string,
-        lat: p.location.latitude as number,
-        lng: p.location.longitude as number,
-        placeId: p.id as string | undefined,
-        distanceMeters: Math.round(haversine(near, { lat: p.location.latitude, lng: p.location.longitude })),
-      }))
-      .sort((a, b) => a.distanceMeters - b.distanceMeters)
-      .slice(0, 6);
-    stationCache.set(key, out);
+
+    const out = [...found.values()].sort((a, b) => a.distanceMeters - b.distanceMeters).slice(0, 6);
+    // Do not cache an empty answer: it may only be a failed call.
+    if (out.length > 0) stationCache.set(key, out);
     return out;
   }
 

@@ -23,8 +23,20 @@ const inMinutes = (m: number) => new Date(Date.now() + m * 60_000).toISOString()
 let db: MemoryDb;
 let api: ReturnType<typeof request>;
 
-beforeEach(() => {
+/** These tests add several contacts, which takes Arrivo Plus. The Free limit has its own tests (billing.test.ts). */
+const plusFor = (userId: string) => ({
+  userId,
+  status: 'active' as const,
+  intervalMonths: 12 as const,
+  dodoSubscriptionId: `sub_${userId}`,
+  dodoCustomerId: `cus_${userId}`,
+  currentPeriodEnd: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+  lastEventAt: new Date().toISOString(),
+});
+
+beforeEach(async () => {
   db = new MemoryDb();
+  for (const id of ['dev-alice', 'dev-bob', 'dev-carol']) await db.upsertSubscription(plusFor(id));
   api = request(createApp(db, cfg));
 });
 
@@ -112,8 +124,14 @@ describe('journeys', () => {
     const c = await acceptedContact();
     const past = await api.post('/v1/journeys').set(A).send(journeyBody([c], { expectedArrival: inMinutes(-30) }));
     expect(past.status).toBe(400);
-    const far = await api.post('/v1/journeys').set(A).send(journeyBody([c], { expectedArrival: inMinutes(60 * 72) }));
+    const far = await api.post('/v1/journeys').set(A).send(journeyBody([c], { expectedArrival: inMinutes(60 * 24 * 15) }));
     expect(far.status).toBe(400);
+  });
+
+  it('accepts a multi-day trip, such as a long train journey (FR-JRN-01)', async () => {
+    const c = await acceptedContact();
+    const res = await api.post('/v1/journeys').set(A).send(journeyBody([c], { expectedArrival: inMinutes(60 * 24 * 2 + 60 * 8) }));
+    expect(res.status).toBe(201);
   });
 
   it('keeps journeys private between users', async () => {

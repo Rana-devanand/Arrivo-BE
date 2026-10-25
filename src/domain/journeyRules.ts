@@ -10,11 +10,14 @@ export const isFinal = (s: JourneyStatus) => FINAL_STATUSES.includes(s);
 /** Watch links keep working this long after a journey ends (SRS FR-CON-07). */
 export const WATCH_GRACE_MS = 2 * 60 * 60 * 1000;
 
-/** Expected arrival must be in the near future, and not absurdly far. */
+/** The longest trip we accept: long train journeys, or crossing the country by road, take days. */
+export const MAX_TRIP_DAYS = 14;
+
+/** Expected arrival must be in the future, and within [MAX_TRIP_DAYS]. */
 export function validateArrival(iso: string, now = Date.now()): string | null {
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return 'Arrival time is not a valid date';
   if (t < now - 60_000) return 'Arrival time must be in the future';
-  if (t > now + 48 * 60 * 60 * 1000) return 'Arrival time cannot be more than 48 hours away';
+  if (t > now + MAX_TRIP_DAYS * 24 * 60 * 60 * 1000) return `Arrival time cannot be more than ${MAX_TRIP_DAYS} days away`;
   return null;
 }

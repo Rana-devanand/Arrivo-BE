@@ -1,5 +1,9 @@
 import type {
   AuthUser,
+  BillingTicket,
+  Household,
+  PlanKey,
+  Subscription,
   Contact,
   ContactStatus,
   FollowedJourney,
@@ -110,6 +114,23 @@ export interface Db {
   clearSafetyTimer(ownerId: string): Promise<void>;
 
   upsertDevice(ownerId: string, platform: 'ios' | 'android' | 'web', pushToken: string): Promise<void>;
+  getSubscription(userId: string): Promise<Subscription | null>;
+  getSubscriptionByDodoId(dodoSubscriptionId: string): Promise<Subscription | null>;
+  upsertSubscription(sub: Subscription): Promise<void>;
+
+  createBillingTicket(t: BillingTicket): Promise<void>;
+  getBillingTicket(tokenHash: string): Promise<BillingTicket | null>;
+  deleteExpiredBillingTickets(nowIso: string): Promise<void>;
+  /** Remembers a checkout we started, to tie the payment back to the person. */
+  recordCheckout(c: { userId: string; email: string; planKey: PlanKey; sessionId: string | null }): Promise<void>;
+  /** The newest checkout started with this email since [sinceIso]. */
+  findLatestCheckoutByEmail(email: string, sinceIso: string): Promise<{ userId: string; planKey: PlanKey } | null>;
+
+  getHousehold(ownerId: string): Promise<Household | null>;
+  /** Creates or replaces the owner's household. */
+  saveHousehold(ownerId: string, name: string, contactIds: string[]): Promise<Household>;
+  deleteHousehold(ownerId: string): Promise<void>;
+
   listPushTokens(ownerId: string): Promise<string[]>;
   /** Removes the token. With [ownerId] only that person's copy goes (sign-out). */
   deletePushToken(pushToken: string, ownerId?: string): Promise<void>;

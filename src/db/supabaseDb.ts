@@ -3,6 +3,10 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { AppError } from '../lib/errors.js';
 import type {
   AuthUser,
+  BillingTicket,
+  Household,
+  PlanKey,
+  Subscription,
   Contact,
   ContactStatus,
   FollowedJourney,
@@ -72,6 +76,16 @@ const toRecent = (r: Row): RecentPlace => ({
   lng: r.lng,
   useCount: r.use_count,
   lastUsedAt: r.last_used_at,
+});
+
+const toSubscription = (r: Row): Subscription => ({
+  userId: r.user_id,
+  status: r.status,
+  intervalMonths: r.interval_months ?? null,
+  dodoSubscriptionId: r.dodo_subscription_id ?? null,
+  dodoCustomerId: r.dodo_customer_id ?? null,
+  currentPeriodEnd: r.current_period_end ?? null,
+  lastEventAt: r.last_event_at,
 });
 
 const toContact = (r: Row): Contact => ({
@@ -655,6 +669,115 @@ export class SupabaseDb implements Db {
         .upsert({ owner_id: ownerId, platform, push_token: pushToken, updated_at: new Date().toISOString() }, { onConflict: 'push_token' }),
       'save device',
     );
+  }
+
+  async getSubscription(userId: string): Promise<Subscription | null> {
+    const res = await this.sb.from('subscriptions').select('*').eq('user_id', userId).maybeSingle();
+    const row = check(res, 'read subscription') as Row | null;
+    return row ? toSubscription(row) : null;
+  }
+
+  async getSubscriptionByDodoId(id: string): Promise<Subscription | null> {
+    const res = await this.sb.from('subscriptions').select('*').eq('dodo_subscription_id', id).maybeSingle();
+    const row = check(res, 'read subscription') as Row | null;
+    return row ? toSubscription(row) : null;
+  }
+
+  async upsertSubscription(s: Subscription): Promise<void> {
+    check(
+      await this.sb.from('subscriptions').upsert(
+        {
+          user_id: s.userId,
+          status: s.status,
+          interval_months: s.intervalMonths,
+          dodo_subscription_id: s.dodoSubscriptionId,
+          dodo_customer_id: s.dodoCustomerId,
+          current_period_end: s.currentPeriodEnd,
+          last_event_at: s.lastEventAt,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' },
+      ),
+      'save subscription',
+    );
+  }
+
+  async createBillingTicket(t: BillingTicket): Promise<void> {
+    check(
+      await this.sb.from('billing_tickets').insert({
+        token_hash: t.tokenHash,
+        user_id: t.userId,
+        email: t.email,
+        plan_key: t.planKey,
+        expires_at: t.expiresAt,
+      }),
+      'create billing ticket',
+    );
+  }
+
+  async getBillingTicket(tokenHash: string): Promise<BillingTicket | null> {
+    const res = await this.sb.from('billing_tickets').select('*').eq('token_hash', tokenHash).maybeSingle();
+    const r = check(res, 'read billing ticket') as Row | null;
+    return r
+      ? { tokenHash: r.token_hash, userId: r.user_id, email: r.email, planKey: r.plan_key, expiresAt: r.expires_at }
+      : null;
+  }
+
+  async deleteExpiredBillingTickets(nowIso: string): Promise<void> {
+    check(await this.sb.from('billing_tickets').delete().lt('expires_at', nowIso), 'clean billing tickets');
+  }
+
+  async recordCheckout(c: { userId: string; email: string; planKey: PlanKey; sessionId: string | null }): Promise<void> {
+    check(
+      await this.sb
+        .from('billing_checkouts')
+        .insert({ user_id: c.userId, email: c.email, plan_key: c.planKey, dodo_session_id: c.sessionId }),
+      'record checkout',
+    );
+  }
+
+  async findLatestCheckoutByEmail(email: string, sinceIso: string): Promise<{ userId: string; planKey: PlanKey } | null> {
+    const res = await this.sb
+      .from('billing_checkouts')
+      .select('user_id, plan_key')
+      .ilike('email', email)
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const row = (check(res, 'find checkout') as Row[])[0];
+    return row ? { userId: row.user_id, planKey: row.plan_key } : null;
+  }
+
+  async getHousehold(ownerId: string): Promise<Household | null> {
+    const res = await this.sb.from('households').select('*').eq('owner_id', ownerId).maybeSingle();
+    const row = check(res, 'read household') as Row | null;
+    if (!row) return null;
+    const members = check(
+      await this.sb.from('household_members').select('contact_id').eq('owner_id', ownerId),
+      'read household members',
+    ) as Row[];
+    return { name: row.name, contactIds: members.map((m) => m.contact_id as string), updatedAt: row.updated_at };
+  }
+
+  async saveHousehold(ownerId: string, name: string, contactIds: string[]): Promise<Household> {
+    const now = new Date().toISOString();
+    check(
+      await this.sb.from('households').upsert({ owner_id: ownerId, name, updated_at: now }, { onConflict: 'owner_id' }),
+      'save household',
+    );
+    check(await this.sb.from('household_members').delete().eq('owner_id', ownerId), 'clear household members');
+    const unique = [...new Set(contactIds)];
+    if (unique.length > 0) {
+      check(
+        await this.sb.from('household_members').insert(unique.map((id) => ({ owner_id: ownerId, contact_id: id }))),
+        'save household members',
+      );
+    }
+    return { name, contactIds: unique, updatedAt: now };
+  }
+
+  async deleteHousehold(ownerId: string): Promise<void> {
+    check(await this.sb.from('households').delete().eq('owner_id', ownerId), 'delete household');
   }
 
   async listPushTokens(ownerId: string): Promise<string[]> {

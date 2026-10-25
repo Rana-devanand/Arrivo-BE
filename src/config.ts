@@ -23,6 +23,15 @@ const schema = z
     CLOUDINARY_API_SECRET: z.string().optional(),
     /** Firebase service account key (JSON or base64 of it). Without it, push notifications are off. */
     FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
+    /** The Arrivo website, where people pay for Arrivo Plus (no trailing slash). Needed for billing. */
+    SITE_URL: z.string().url().optional(),
+    /** Dodo Payments. Billing is on only when all of these are set. */
+    DODO_API_KEY: z.string().optional(),
+    DODO_MODE: z.enum(['test', 'live']).default('test'),
+    DODO_WEBHOOK_SECRET: z.string().optional(),
+    DODO_PRODUCT_PLUS_MONTHLY: z.string().optional(),
+    DODO_PRODUCT_PLUS_6_MONTHS: z.string().optional(),
+    DODO_PRODUCT_PLUS_YEARLY: z.string().optional(),
     MAIL_FROM: z.string().default('Arrivo <invites@tryarrivo.com>'),
   })
   .superRefine((v, ctx) => {
@@ -31,6 +40,10 @@ const schema = z
       if (!v.SUPABASE_SERVICE_ROLE_KEY) {
         ctx.addIssue({ code: 'custom', message: 'SUPABASE_SERVICE_ROLE_KEY is required when DB_DRIVER=supabase' });
       }
+    }
+    // Live money needs live keys on purpose: a test key in production is a mistake worth stopping for.
+    if (v.NODE_ENV === 'production' && v.DODO_API_KEY && v.DODO_MODE === 'test') {
+      ctx.addIssue({ code: 'custom', message: 'DODO_MODE=test is set in production. Set DODO_MODE=live with a live key, or remove the Dodo settings.' });
     }
     if (v.NODE_ENV === 'production' && v.ENABLE_DEV_ROUTES === 'true') {
       ctx.addIssue({ code: 'custom', message: 'ENABLE_DEV_ROUTES is not allowed in production' });

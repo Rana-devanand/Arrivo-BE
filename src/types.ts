@@ -20,6 +20,40 @@ export interface AuthUser {
   displayName: string | null;
 }
 
+/** The three ways to pay for Arrivo Plus. */
+export type PlanKey = 'monthly' | 'sixMonths' | 'yearly';
+
+export type SubscriptionStatus = 'active' | 'past_due' | 'on_hold' | 'cancelled' | 'expired' | 'failed';
+
+/** What we know about someone's paid plan. No subscription means Arrivo Free. */
+export interface Subscription {
+  userId: string;
+  status: SubscriptionStatus;
+  intervalMonths: 1 | 6 | 12 | null;
+  dodoSubscriptionId: string | null;
+  dodoCustomerId: string | null;
+  /** When the paid time ends (the next billing date). */
+  currentPeriodEnd: string | null;
+  /** Time of the newest webhook applied. */
+  lastEventAt: string;
+}
+
+/** A short-lived pass from the app to the website, naming who is paying. Only its hash is stored. */
+export interface BillingTicket {
+  tokenHash: string;
+  userId: string;
+  email: string;
+  planKey: PlanKey;
+  expiresAt: string;
+}
+
+/** A Family household: a name and some of the owner's contacts. */
+export interface Household {
+  name: string;
+  contactIds: string[];
+  updatedAt: string;
+}
+
 export interface Profile {
   id: string;
   displayName: string;

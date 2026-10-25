@@ -1,0 +1,73 @@
+/** Countries people can see prices for, and the money they use. */
+export interface Country {
+  code: string;
+  name: string;
+  currency: string;
+}
+
+const c = (code: string, name: string, currency: string): Country => ({ code, name, currency });
+
+export const COUNTRIES: readonly Country[] = [
+  c('US', 'United States', 'USD'),
+  c('IN', 'India', 'INR'),
+  c('GB', 'United Kingdom', 'GBP'),
+  c('CA', 'Canada', 'CAD'),
+  c('AU', 'Australia', 'AUD'),
+  c('NZ', 'New Zealand', 'NZD'),
+  c('SG', 'Singapore', 'SGD'),
+  c('AE', 'United Arab Emirates', 'AED'),
+  c('SA', 'Saudi Arabia', 'SAR'),
+  c('QA', 'Qatar', 'QAR'),
+  c('KW', 'Kuwait', 'KWD'),
+  c('BH', 'Bahrain', 'BHD'),
+  c('OM', 'Oman', 'OMR'),
+  c('DE', 'Germany', 'EUR'),
+  c('FR', 'France', 'EUR'),
+  c('IT', 'Italy', 'EUR'),
+  c('ES', 'Spain', 'EUR'),
+  c('NL', 'Netherlands', 'EUR'),
+  c('IE', 'Ireland', 'EUR'),
+  c('PT', 'Portugal', 'EUR'),
+  c('BE', 'Belgium', 'EUR'),
+  c('AT', 'Austria', 'EUR'),
+  c('FI', 'Finland', 'EUR'),
+  c('GR', 'Greece', 'EUR'),
+  c('CH', 'Switzerland', 'CHF'),
+  c('SE', 'Sweden', 'SEK'),
+  c('NO', 'Norway', 'NOK'),
+  c('DK', 'Denmark', 'DKK'),
+  c('PL', 'Poland', 'PLN'),
+  c('CZ', 'Czechia', 'CZK'),
+  c('HU', 'Hungary', 'HUF'),
+  c('RO', 'Romania', 'RON'),
+  c('UA', 'Ukraine', 'UAH'),
+  c('TR', 'Türkiye', 'TRY'),
+  c('IL', 'Israel', 'ILS'),
+  c('EG', 'Egypt', 'EGP'),
+  c('ZA', 'South Africa', 'ZAR'),
+  c('NG', 'Nigeria', 'NGN'),
+  c('KE', 'Kenya', 'KES'),
+  c('GH', 'Ghana', 'GHS'),
+  c('JP', 'Japan', 'JPY'),
+  c('KR', 'South Korea', 'KRW'),
+  c('CN', 'China', 'CNY'),
+  c('HK', 'Hong Kong', 'HKD'),
+  c('TW', 'Taiwan', 'TWD'),
+  c('TH', 'Thailand', 'THB'),
+  c('MY', 'Malaysia', 'MYR'),
+  c('ID', 'Indonesia', 'IDR'),
+  c('PH', 'Philippines', 'PHP'),
+  c('VN', 'Vietnam', 'VND'),
+  c('PK', 'Pakistan', 'PKR'),
+  c('BD', 'Bangladesh', 'BDT'),
+  c('LK', 'Sri Lanka', 'LKR'),
+  c('NP', 'Nepal', 'NPR'),
+  c('BR', 'Brazil', 'BRL'),
+  c('MX', 'Mexico', 'MXN'),
+  c('AR', 'Argentina', 'ARS'),
+  c('CL', 'Chile', 'CLP'),
+  c('CO', 'Colombia', 'COP'),
+  c('PE', 'Peru', 'PEN'),
+];
+
+export const CURRENCIES: readonly string[] = [...new Set(COUNTRIES.map((x) => x.currency))];

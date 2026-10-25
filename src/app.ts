@@ -10,6 +10,10 @@ import { noopMailer, type Mailer } from './lib/mailer.js';
 import { noCloudinary, type Cloudinary } from './lib/cloudinary.js';
 import { noPlaces, type PlacesProvider } from './lib/places.js';
 import { noRouting, type RoutingProvider } from './lib/routing.js';
+import type { BillingConfig } from './lib/dodo.js';
+import type { RatesProvider } from './lib/rates.js';
+import { billingRoutes, type WithRawBody } from './routes/billing.js';
+import { householdRoutes } from './routes/household.js';
 import { planRoutes } from './routes/plan.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { trackRoutes } from './routes/track.js';
@@ -29,6 +33,8 @@ export function createApp(
   places: PlacesProvider = noPlaces,
   photos: Cloudinary = noCloudinary,
   routing: RoutingProvider = noRouting,
+  billing: BillingConfig | null = null,
+  rates?: RatesProvider,
 ): Express {
   const app = express();
   app.disable('x-powered-by');
@@ -37,9 +43,19 @@ export function createApp(
   app.use(helmet());
 
   const origins = config.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
+  // The website calls the checkout from the browser, so its address is always allowed.
+  if (billing) origins.push(new URL(billing.siteUrl).origin);
   // Mobile apps do not send an Origin header; this only affects browsers.
   app.use(cors({ origin: origins.length ? origins : false }));
-  app.use(express.json({ limit: '100kb' }));
+  // The raw bytes are kept for the payment webhook, whose signature covers them exactly.
+  app.use(
+    express.json({
+      limit: '100kb',
+      verify: (req, _res, buf) => {
+        (req as WithRawBody).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
 
   // Minimal request log. Never logs bodies, query strings, tokens or coordinates.
   app.use((req, res, next) => {
@@ -63,9 +79,13 @@ export function createApp(
   app.use('/v1', internalRoutes(db, config.CRON_SECRET));
   // Public (the background service has no sign-in): keep it before the signed-in routers.
   app.use('/v1', trackRoutes(db, places));
+  // Plans, the website's checkout and Dodo's webhook are public; the routes that need a
+  // sign-in say so themselves. It must come before the routers that require one for everything.
+  app.use('/v1', billingRoutes(db, billing, rates));
   app.use('/v1', profileRoutes(db, photos));
   app.use('/v1', contactRoutes(db, { devRoutes: config.ENABLE_DEV_ROUTES === 'true', mailer }));
   app.use('/v1', invitationRoutes(db));
+  app.use('/v1', householdRoutes(db));
   app.use('/v1', placeRoutes(db, places));
   app.use('/v1', planRoutes(db, routing));
   app.use('/v1', notificationRoutes(db));

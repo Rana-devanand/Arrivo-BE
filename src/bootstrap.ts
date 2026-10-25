@@ -8,9 +8,28 @@ import type { Db } from './db/types.js';
 import { cloudinary, noCloudinary } from './lib/cloudinary.js';
 import { noopMailer, resendMailer } from './lib/mailer.js';
 import { googlePlaces, noPlaces } from './lib/places.js';
+import type { BillingConfig } from './lib/dodo.js';
 import { errorText, logError, logInfo } from './lib/log.js';
 import { fcmSender, setPushSender } from './lib/push.js';
 import { googleRouting, noRouting } from './lib/routing.js';
+
+/** Dodo Payments settings, or null when billing is not fully set up (paid plans then say "not open yet"). */
+export function billingFrom(config: Config): BillingConfig | null {
+  const {
+    SITE_URL: siteUrl,
+    DODO_API_KEY: apiKey,
+    DODO_WEBHOOK_SECRET: webhookSecret,
+    DODO_PRODUCT_PLUS_MONTHLY: monthly,
+    DODO_PRODUCT_PLUS_6_MONTHS: sixMonths,
+    DODO_PRODUCT_PLUS_YEARLY: yearly,
+  } = config;
+  if (!siteUrl || !apiKey || !webhookSecret || !monthly || !sixMonths || !yearly) {
+    logInfo('[billing] off: set SITE_URL, DODO_API_KEY, DODO_WEBHOOK_SECRET and the three DODO_PRODUCT_PLUS_* ids to turn paid plans on');
+    return null;
+  }
+  logInfo(`[billing] on (${config.DODO_MODE} mode)`);
+  return { apiKey, webhookSecret, mode: config.DODO_MODE, products: { monthly, sixMonths, yearly }, siteUrl: siteUrl.replace(/\/+$/, '') };
+}
 
 /** Builds the API from environment settings. Shared by the long-running server and Vercel. */
 export function createFromEnv(): { app: Express; db: Db; config: Config } {
@@ -40,5 +59,5 @@ export function createFromEnv(): { app: Express; db: Db; config: Config } {
   const routesKey =config.GOOGLE_ROUTES_API_KEY || config.GOOGLE_PLACES_API_KEY;
   const routing = routesKey ? googleRouting(routesKey) : noRouting;
 
-  return { app: createApp(db, config, mailer, places, photos, routing), db, config };
+  return { app: createApp(db, config, mailer, places, photos, routing, billingFrom(config)), db, config };
 }
