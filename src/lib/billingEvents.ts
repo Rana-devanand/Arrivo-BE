@@ -121,6 +121,8 @@ export async function applyDodoEvent(db: Db, cfg: BillingConfig, event: DodoEven
     dodoCustomerId: customerId ?? existing?.dodoCustomerId ?? null,
     currentPeriodEnd: periodEnd,
     lastEventAt: eventAt,
+    // Which product (Plus or Plus Family) decides whether members get Plus too.
+    planKey: planKey ?? existing?.planKey ?? null,
   };
   await db.upsertSubscription(next);
   logInfo(`[billing] ${type} applied status=${status} interval=${next.intervalMonths ?? '-'}`);

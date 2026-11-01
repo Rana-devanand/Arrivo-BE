@@ -1,3 +1,4 @@
+import { checkAvailability, type ModeAvailability, type StationLookup } from '../domain/modeAvailability.js';
 import { decodePolyline, encodePolyline, haversine, type LatLng } from './polyline.js';
 
 export type PlanMode = 'walk' | 'bike' | 'car' | 'train' | 'metro';
@@ -64,6 +65,10 @@ export interface RoutingProvider {
   plan(req: PlanRequest): Promise<RoutePlan>;
   /** Nearest stations to a place, closest first. */
   stations(near: LatLng, mode: 'train' | 'metro'): Promise<Station[]>;
+  /** Like [stations], but also says when every search failed (so "none" is not proof). */
+  findStations(near: LatLng, mode: 'train' | 'metro'): Promise<StationLookup>;
+  /** Which ways of travelling work for this trip (FR-JRN-11). */
+  availability(origin: LatLng, destination: LatLng): Promise<ModeAvailability[]>;
 }
 
 // Typical average speeds on Indian roads and rails, door to door (km/h).
@@ -225,6 +230,10 @@ export const noRouting: RoutingProvider = {
     return estimatePlan(req, 'Route service is not set up yet, so this is an estimate.');
   },
   stations: async () => [],
+  // Nothing can be checked without the service: that is not proof a mode is missing.
+  findStations: async () => ({ stations: [], failed: true }),
+  availability: (origin, destination) =>
+    checkAvailability(origin, destination, noRouting.findStations, async () => false),
 };
 
 const seconds = (d: unknown): number => {
@@ -269,9 +278,10 @@ export function googleRouting(apiKey: string): RoutingProvider {
 
   const stationCache = ttl<Station[]>(15 * 60_000);
   const legCache = ttl<RoutePlan>(2 * 60_000);
+  const rideCache = ttl<RoutePlan | null>(10 * 60_000);
 
-  /** One Places call. Returns the places, or none when the call fails (the caller then widens or gives up). */
-  async function placesCall(endpoint: 'searchNearby' | 'searchText', body: unknown): Promise<Record<string, any>[]> {
+  /** One Places call. Returns the places, or null when the call fails (the caller then widens or gives up). */
+  async function placesCall(endpoint: 'searchNearby' | 'searchText', body: unknown): Promise<Record<string, any>[] | null> {
     try {
       const res = await fetch(`https://places.googleapis.com/v1/places:${endpoint}`, {
         method: 'POST',
@@ -285,11 +295,11 @@ export function googleRouting(apiKey: string): RoutingProvider {
       });
       if (!res.ok) {
         console.error(`[routes] station search (${endpoint}) returned ${res.status}`);
-        return [];
+        return null;
       }
       return ((await res.json()) as { places?: Record<string, any>[] }).places ?? [];
     } catch {
-      return [];
+      return null;
     }
   }
 
@@ -299,13 +309,20 @@ export function googleRouting(apiKey: string): RoutingProvider {
    * widens step by step over a larger area. The person is always shown the nearest
    * stations there are, however far, and chooses how to get there.
    */
-  async function nearbyStations(near: LatLng, mode: 'train' | 'metro'): Promise<Station[]> {
+  async function findStations(near: LatLng, mode: 'train' | 'metro'): Promise<StationLookup> {
     const key = `${near.lat.toFixed(3)},${near.lng.toFixed(3)}|${mode}`;
     const hit = stationCache.get(key);
-    if (hit) return hit;
+    if (hit) return { stations: hit, failed: false };
 
     const found = new Map<string, Station>();
-    const add = (places: Record<string, any>[]) => {
+    let calls = 0;
+    let failures = 0;
+    const add = (places: Record<string, any>[] | null) => {
+      calls++;
+      if (places === null) {
+        failures++;
+        return;
+      }
       for (const p of places) {
         if (!p.location) continue;
         const lat = p.location.latitude as number;
@@ -354,11 +371,24 @@ export function googleRouting(apiKey: string): RoutingProvider {
     const out = [...found.values()].sort((a, b) => a.distanceMeters - b.distanceMeters).slice(0, 6);
     // Do not cache an empty answer: it may only be a failed call.
     if (out.length > 0) stationCache.set(key, out);
-    return out;
+    // "None found" is only proof when the searches actually ran. Any failed widening
+    // step leaves the far area unchecked.
+    return { stations: out, failed: out.length === 0 && failures > 0 && calls > 0 };
   }
+
+  const nearbyStations = async (near: LatLng, mode: 'train' | 'metro') => (await findStations(near, mode)).stations;
 
   /** Ride between two stations. Null when no timetable service answers (an estimate is used then). */
   async function railBetween(from: LatLng, to: LatLng, mode: 'train' | 'metro'): Promise<RoutePlan | null> {
+    const key = `${from.lat.toFixed(4)},${from.lng.toFixed(4)}>${to.lat.toFixed(4)},${to.lng.toFixed(4)}|${mode}`;
+    const hit = rideCache.get(key);
+    if (hit !== undefined) return hit;
+    const found = await railLookup(from, to, mode);
+    rideCache.set(key, found);
+    return found;
+  }
+
+  async function railLookup(from: LatLng, to: LatLng, mode: 'train' | 'metro'): Promise<RoutePlan | null> {
     const loc = (p: LatLng) => ({ location: { latLng: { latitude: p.lat, longitude: p.lng } } });
     try {
       const res = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
@@ -399,6 +429,9 @@ export function googleRouting(apiKey: string): RoutingProvider {
   const provider: RoutingProvider = {
     enabled: true,
     stations: nearbyStations,
+    findStations,
+    availability: (origin, destination) =>
+      checkAvailability(origin, destination, findStations, async (a, b, mode) => (await railBetween(a, b, mode)) !== null),
     async plan(req) {
       if (req.via && (req.mode === 'train' || req.mode === 'metro')) {
         return planViaStations(

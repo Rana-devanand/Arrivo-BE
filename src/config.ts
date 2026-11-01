@@ -32,6 +32,8 @@ const schema = z
     DODO_PRODUCT_PLUS_MONTHLY: z.string().optional(),
     DODO_PRODUCT_PLUS_6_MONTHS: z.string().optional(),
     DODO_PRODUCT_PLUS_YEARLY: z.string().optional(),
+    /** Arrivo Plus Family, $49 a year. Optional: without it the Family plan says "not open yet". */
+    DODO_PRODUCT_FAMILY_YEARLY: z.string().optional(),
     MAIL_FROM: z.string().default('Arrivo <invites@tryarrivo.com>'),
   })
   .superRefine((v, ctx) => {

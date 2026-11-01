@@ -7,7 +7,7 @@ import { SupabaseDb } from './db/supabaseDb.js';
 import type { Db } from './db/types.js';
 import { cloudinary, noCloudinary } from './lib/cloudinary.js';
 import { noopMailer, resendMailer } from './lib/mailer.js';
-import { googlePlaces, noPlaces } from './lib/places.js';
+import { googlePlaces, noPlaces, type PlacesProvider } from './lib/places.js';
 import type { BillingConfig } from './lib/dodo.js';
 import { errorText, logError, logInfo } from './lib/log.js';
 import { fcmSender, setPushSender } from './lib/push.js';
@@ -31,11 +31,19 @@ export function billingFrom(config: Config): BillingConfig | null {
   if (config.NODE_ENV === 'production' && config.DODO_MODE === 'test') {
     logInfo('[billing] warning: Dodo is in TEST mode on a production server. Real customers cannot pay until DODO_MODE=live with live keys.');
   }
-  return { apiKey, webhookSecret, mode: config.DODO_MODE, products: { monthly, sixMonths, yearly }, siteUrl: siteUrl.replace(/\/+$/, '') };
+  const familyYearly = config.DODO_PRODUCT_FAMILY_YEARLY;
+  if (!familyYearly) logInfo('[billing] Arrivo Plus Family is off: set DODO_PRODUCT_FAMILY_YEARLY to sell it');
+  return {
+    apiKey,
+    webhookSecret,
+    mode: config.DODO_MODE,
+    products: { monthly, sixMonths, yearly, ...(familyYearly ? { familyYearly } : {}) },
+    siteUrl: siteUrl.replace(/\/+$/, ''),
+  };
 }
 
 /** Builds the API from environment settings. Shared by the long-running server and Vercel. */
-export function createFromEnv(): { app: Express; db: Db; config: Config } {
+export function createFromEnv(): { app: Express; db: Db; config: Config; places: PlacesProvider } {
   const config = loadConfig();
 
   const db: Db =
@@ -62,5 +70,5 @@ export function createFromEnv(): { app: Express; db: Db; config: Config } {
   const routesKey =config.GOOGLE_ROUTES_API_KEY || config.GOOGLE_PLACES_API_KEY;
   const routing = routesKey ? googleRouting(routesKey) : noRouting;
 
-  return { app: createApp(db, config, mailer, places, photos, routing, billingFrom(config)), db, config };
+  return { app: createApp(db, config, mailer, places, photos, routing, billingFrom(config)), db, config, places };
 }

@@ -2,6 +2,9 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 import { AppError } from '../lib/errors.js';
 import type {
+  FamilyMember,
+  AdminNotificationRow,
+  AdminUser,
   AuthUser,
   BillingTicket,
   Household,
@@ -25,7 +28,7 @@ import type {
   SosEvent,
   WatchLink,
 } from '../types.js';
-import type { Db, JourneyPatch, ListJourneysOptions } from './types.js';
+import type { Db, JourneyPatch, ListJourneysOptions, ProfilePatch } from './types.js';
 
 const OPEN: JourneyStatus[] = ['active', 'overdue'];
 
@@ -42,6 +45,8 @@ const toProfile = (r: Row): Profile => ({
   displayName: r.display_name ?? '',
   phone: r.phone ?? null,
   avatarUrl: r.avatar_url ?? null,
+  countryCode: r.country_code ?? null,
+  role: r.user_role === 'ADMIN' ? 'ADMIN' : 'USER',
   createdAt: r.created_at,
 });
 
@@ -86,6 +91,17 @@ const toSubscription = (r: Row): Subscription => ({
   dodoCustomerId: r.dodo_customer_id ?? null,
   currentPeriodEnd: r.current_period_end ?? null,
   lastEventAt: r.last_event_at,
+  planKey: r.plan_key ?? null,
+});
+
+const toFamilyMember = (r: Row): FamilyMember => ({
+  id: r.id,
+  ownerId: r.owner_id,
+  email: r.email,
+  memberUserId: r.member_user_id ?? null,
+  status: r.status,
+  createdAt: r.created_at,
+  acceptedAt: r.accepted_at ?? null,
 });
 
 const toContact = (r: Row): Contact => ({
@@ -125,6 +141,8 @@ const toJourney = (r: Row, contactIds: string[]): Journey => ({
   trackToken: r.track_token ?? null,
   updateIntervalMinutes: r.update_interval_minutes ?? null,
   lastProgressAt: r.last_progress_at ?? null,
+  staleAlertAt: r.stale_alert_at ?? null,
+  sharingPaused: r.sharing_paused === true,
   contactIds,
 });
 
@@ -170,13 +188,49 @@ export class SupabaseDb implements Db {
     return toProfile(check(created, 'create profile'));
   }
 
-  async updateProfile(id: string, patch: { displayName?: string; phone?: string | null; avatarUrl?: string | null }): Promise<Profile> {
+  async updateProfile(id: string, patch: ProfilePatch): Promise<Profile> {
     const update: Row = { updated_at: new Date().toISOString() };
     if (patch.displayName !== undefined) update.display_name = patch.displayName;
     if (patch.phone !== undefined) update.phone = patch.phone;
     if (patch.avatarUrl !== undefined) update.avatar_url = patch.avatarUrl;
+    if (patch.countryCode !== undefined) update.country_code = patch.countryCode;
     const res = await this.sb.from('profiles').update(update).eq('id', id).select('*').single();
     return toProfile(check(res, 'update profile'));
+  }
+
+  async listUsersForAdmin(): Promise<AdminUser[]> {
+    const profiles = check(
+      await this.sb.from('profiles').select('*').order('created_at', { ascending: false }).limit(5000),
+      'list profiles',
+    ) as Row[];
+    const stats = check(await this.sb.rpc('admin_journey_stats'), 'journey stats') as Row[];
+    const byOwner = new Map(stats.map((s) => [s.owner_id as string, s]));
+
+    // Emails live in auth.users, which only the admin API can read.
+    const emails = new Map<string, string | null>();
+    for (let page = 1; page <= 50; page++) {
+      const { data, error } = await this.sb.auth.admin.listUsers({ page, perPage: 1000 });
+      if (error) throw new AppError(500, 'db_error', 'list users failed', { reason: error.message });
+      for (const u of data.users) emails.set(u.id, u.email ?? null);
+      if (data.users.length < 1000) break;
+    }
+
+    return profiles.map((r) => {
+      const s = byOwner.get(r.id);
+      return {
+        ...toProfile(r),
+        email: emails.get(r.id) ?? null,
+        deletionRequested: r.deletion_requested_at != null,
+        journeys: {
+          total: s?.total ?? 0,
+          active: s?.active ?? 0,
+          overdue: s?.overdue ?? 0,
+          completed: s?.completed ?? 0,
+          cancelled: s?.cancelled ?? 0,
+          lastStartedAt: s?.last_started_at ?? null,
+        },
+      };
+    });
   }
 
   async getDisplayName(id: string): Promise<string> {
@@ -289,6 +343,37 @@ export class SupabaseDb implements Db {
       'read notifications',
     ) as Row[];
     return rows.map(toNotification);
+  }
+
+  async listNotificationsForAdmin(limit: number): Promise<AdminNotificationRow[]> {
+    const rows = check(
+      await this.sb
+        .from('notifications')
+        .select('id, user_id, type, title, body, data, read_at, created_at')
+        .order('created_at', { ascending: false })
+        .limit(limit),
+      'read all notifications',
+    ) as Row[];
+    return rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      type: r.type,
+      title: r.title,
+      body: r.body ?? '',
+      journeyId: typeof r.data?.journeyId === 'string' ? r.data.journeyId : null,
+      place: typeof r.data?.place === 'string' ? r.data.place : null,
+      read: r.read_at != null,
+      createdAt: r.created_at,
+    }));
+  }
+
+  async listJourneysForAdmin(limit: number): Promise<(Journey & { ownerId: string })[]> {
+    const rows = check(
+      await this.sb.from('journeys').select('*').order('started_at', { ascending: false }).limit(limit),
+      'list all journeys',
+    ) as Row[];
+    const journeys = await this.hydrate(rows);
+    return journeys.map((j, i) => ({ ...j, ownerId: rows[i]?.owner_id as string }));
   }
 
   async countUnreadNotifications(userId: string): Promise<number> {
@@ -580,6 +665,26 @@ export class SupabaseDb implements Db {
     return row ? (await this.hydrate([row]))[0]! : null;
   }
 
+  async listOpenJourneysForSweep(): Promise<(Journey & { ownerId: string })[]> {
+    const rows = check(
+      await this.sb.from('journeys').select('*').in('status', OPEN).limit(2000),
+      'list open journeys',
+    ) as Row[];
+    const journeys = await this.hydrate(rows);
+    return journeys.map((j, i) => ({ ...j, ownerId: rows[i]?.owner_id as string }));
+  }
+
+  async claimStaleAlert(journeyId: string, previous: string | null, nowIso: string): Promise<boolean> {
+    let q = this.sb.from('journeys').update({ stale_alert_at: nowIso }).eq('id', journeyId);
+    q = previous === null ? q.is('stale_alert_at', null) : q.eq('stale_alert_at', previous);
+    const rows = check(await q.select('id'), 'claim stale alert') as Row[];
+    return rows.length === 1;
+  }
+
+  async setSharingPaused(journeyId: string, paused: boolean): Promise<void> {
+    check(await this.sb.from('journeys').update({ sharing_paused: paused }).eq('id', journeyId), 'set sharing paused');
+  }
+
   async markOverdue(nowIso: string): Promise<number> {
     const res = await this.sb.rpc('mark_overdue_journeys', { now_ts: nowIso });
     return Number(check(res, 'mark overdue') ?? 0);
@@ -694,6 +799,7 @@ export class SupabaseDb implements Db {
           dodo_customer_id: s.dodoCustomerId,
           current_period_end: s.currentPeriodEnd,
           last_event_at: s.lastEventAt,
+          ...(s.planKey !== undefined ? { plan_key: s.planKey } : {}),
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'user_id' },
@@ -746,6 +852,71 @@ export class SupabaseDb implements Db {
       .limit(1);
     const row = (check(res, 'find checkout') as Row[])[0];
     return row ? { userId: row.user_id, planKey: row.plan_key } : null;
+  }
+
+  async listFamilyMembers(ownerId: string): Promise<FamilyMember[]> {
+    const rows = check(
+      await this.sb.from('family_members').select('*').eq('owner_id', ownerId).order('created_at', { ascending: true }),
+      'read family members',
+    ) as Row[];
+    return rows.map(toFamilyMember);
+  }
+
+  async addFamilyMember(ownerId: string, email: string): Promise<FamilyMember> {
+    const res = await this.sb
+      .from('family_members')
+      .insert({ owner_id: ownerId, email: email.toLowerCase(), status: 'invited' })
+      .select('*')
+      .single();
+    return toFamilyMember(check(res, 'add family member'));
+  }
+
+  async getFamilyMember(id: string): Promise<FamilyMember | null> {
+    const res = await this.sb.from('family_members').select('*').eq('id', id).maybeSingle();
+    const row = check(res, 'read family member') as Row | null;
+    return row ? toFamilyMember(row) : null;
+  }
+
+  async listFamilyInvitesByEmail(email: string): Promise<FamilyMember[]> {
+    const rows = check(
+      await this.sb.from('family_members').select('*').eq('email', email.toLowerCase()).eq('status', 'invited'),
+      'read family invites',
+    ) as Row[];
+    return rows.map(toFamilyMember);
+  }
+
+  async getFamilyMembershipOf(userId: string): Promise<FamilyMember | null> {
+    const res = await this.sb
+      .from('family_members')
+      .select('*')
+      .eq('member_user_id', userId)
+      .eq('status', 'accepted')
+      .limit(1);
+    const row = (check(res, 'read family membership') as Row[])[0];
+    return row ? toFamilyMember(row) : null;
+  }
+
+  async answerFamilyInvite(id: string, userId: string, status: 'accepted' | 'declined'): Promise<FamilyMember | null> {
+    const res = await this.sb
+      .from('family_members')
+      .update({ status, member_user_id: userId, accepted_at: status === 'accepted' ? new Date().toISOString() : null })
+      .eq('id', id)
+      .eq('status', 'invited')
+      .select('*');
+    const row = (check(res, 'answer family invite') as Row[])[0];
+    return row ? toFamilyMember(row) : null;
+  }
+
+  async cancelFamilyInvite(ownerId: string, id: string): Promise<FamilyMember | null> {
+    const res = await this.sb
+      .from('family_members')
+      .update({ status: 'cancelled' })
+      .eq('id', id)
+      .eq('owner_id', ownerId)
+      .eq('status', 'invited')
+      .select('*');
+    const row = (check(res, 'cancel family invite') as Row[])[0];
+    return row ? toFamilyMember(row) : null;
   }
 
   async getHousehold(ownerId: string): Promise<Household | null> {

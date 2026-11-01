@@ -6,6 +6,7 @@ import { loadConfig } from '../src/config.js';
 import { MemoryDb } from '../src/db/memoryDb.js';
 import { noPlaces, type AreaInfo } from '../src/lib/places.js';
 import { describePlace } from '../src/lib/progress.js';
+import { noRouting } from '../src/lib/routing.js';
 import { setPushSender } from '../src/lib/push.js';
 
 const cfg = {
@@ -792,6 +793,8 @@ describe('route planning and trip extras', () => {
         estimated: false,
       }),
       stations: async () => [],
+      findStations: noRouting.findStations,
+      availability: noRouting.availability,
     };
     const app = request(createApp(db, cfg, undefined, undefined, undefined, routing));
     const r = await app.get('/v1/routes/plan').query({ oLat: 1, oLng: 1, dLat: 2, dLng: 2, mode: 'metro' }).set(A);
@@ -994,12 +997,31 @@ describe('train trips door to door', () => {
   });
 
   it('serves the stations list through the API', async () => {
-    const routing = { enabled: true, plan: async () => { throw new Error('unused'); }, stations: async () => [{ name: 'Mohali Station', address: '', lat: 30.7, lng: 76.7, distanceMeters: 900 }] };
+    const station = { name: 'Mohali Station', address: '', lat: 30.7, lng: 76.7, distanceMeters: 900 };
+    const routing = {
+      enabled: true,
+      plan: async () => {
+        throw new Error('unused');
+      },
+      stations: async () => [station],
+      findStations: async () => ({ stations: [station], failed: false }),
+    };
     const app = request(createApp(db, cfg, undefined, undefined, undefined, routing as never));
     const r = await app.get('/v1/routes/stations').query({ lat: 30.7, lng: 76.7, mode: 'train' }).set(A);
     expect(r.status).toBe(200);
     expect(r.body.items[0].name).toBe('Mohali Station');
     expect((await app.get('/v1/routes/stations').query({ lat: 30.7, lng: 76.7, mode: 'car' }).set(A)).status).toBe(400);
+  });
+
+  it('a failed station search is a 503, never an empty "no stations" list (FR-JRN-11)', async () => {
+    const app = request(createApp(db, cfg)); // no route service: nothing can be checked
+    const r = await app.get('/v1/routes/stations').query({ lat: 30.7, lng: 76.7, mode: 'train' }).set(A);
+    expect(r.status).toBe(503);
+    const av = await app.get('/v1/routes/availability').query({ oLat: 28.6, oLng: 77.2, dLat: 25.6, dLng: 85.1 }).set(A);
+    expect(av.status).toBe(200);
+    const train = av.body.modes.find((m: { mode: string }) => m.mode === 'train');
+    expect(train).toMatchObject({ status: 'estimate', retry: true });
+    expect(av.body.modes.find((m: { mode: string }) => m.mode === 'car').status).toBe('available');
   });
 });
 

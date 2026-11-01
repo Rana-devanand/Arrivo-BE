@@ -126,6 +126,7 @@ Run them in order with `supabase db push` (from `backend/`):
 | `SITE_URL` | | the Arrivo website. Checkout returns here (`/pricing/success`, `/pricing/cancelled`) and it is allowed by CORS |
 | `DODO_API_KEY` / `DODO_MODE` / `DODO_WEBHOOK_SECRET` | `test` | Dodo Payments. Mode is `test` or `live` (a production server in `test` mode logs a warning, and nobody can really pay). The webhook is `POST /v1/billing/webhook`. Empty = Plus cannot be bought |
 | `DODO_PRODUCT_PLUS_MONTHLY` / `_6_MONTHS` / `_YEARLY` | | the Dodo product id of each Arrivo Plus plan |
+| `DODO_PRODUCT_FAMILY_YEARLY` | | the Dodo product id of Arrivo Plus Family ($49 a year). Empty = Family shows "not open yet". Family members: `GET /v1/family`, `POST /v1/family/members {email}`, `DELETE /v1/family/members/:id` (unanswered invitations only), `GET /v1/family/invites`, `POST /v1/family/invites/:id/accept|decline` |
 | `MAIL_FROM` | `Arrivo <invites@tryarrivo.com>` | sender; the domain must be verified in Resend |
 
 ## Logs: did the notification go out?
@@ -151,7 +152,13 @@ All routes are under `/v1` and need `Authorization: Bearer <token>`, except
 
 | Method | Path | What it does |
 |---|---|---|
-| GET / PUT | `/me` | read / update your profile (name, phone, photo address). Includes your sign-in email |
+| GET / PUT | `/me` | read / update your profile (name, phone, photo address, `countryCode`). Includes your sign-in email and `role` (read-only) |
+| GET | `/admin/users` | ADMIN only: every user with email, phone, country, role and journey counts |
+| POST | `/internal/sweep` | scheduler only (`Authorization: Bearer CRON_SECRET`): overdue, due progress updates, "location stopped" alerts. Supabase `pg_cron` calls it every 5 min (see migration `20261102000011_sweep.sql`) |
+| POST | `/track/:token/sharing` | the phone's service says sharing is paused or resumed `{ paused }` |
+| GET | `/admin/notifications?limit=` | ADMIN only: newest saved notifications (default 300, max 1000) with recipient, traveller, message and place name. Never coordinates |
+| GET | `/admin/journey-activity` | ADMIN only: per user the journey count, and per journey the notifications sent, recipients and place names |
+| GET | `/admin/users/:id/journeys` | ADMIN only: that user's last 100 journeys, without coordinates, route, photo or tokens |
 | POST | `/me/avatar/ticket` | signed, one-user permit to upload a profile photo to Cloudinary |
 | DELETE | `/me` | request account deletion (ends a journey in progress first) |
 | POST | `/devices` | save a push token |
@@ -172,7 +179,8 @@ All routes are under `/v1` and need `Authorization: Bearer <token>`, except
 | GET | `/notifications/unread-count` | number of unread items (for the bell badge) |
 | POST | `/notifications/read` | mark some (or all) read |
 | GET / POST / DELETE | `/places/recent` | places the person picked before (so search can skip the paid lookup) |
-| GET | `/routes/stations?lat&lng&mode=train|metro` | nearest railway / metro stations to a place (Google Places), closest first |
+| GET | `/routes/stations?lat&lng&mode=train|metro` | nearest railway / metro stations to a place (Google Places), closest first. 503 when every search failed (never an empty list by mistake) |
+| GET | `/routes/availability?oLat&oLng&dLat&dLng` | each mode as `available`, `estimate` or `unavailable` with a `reason` (and `retry` when the check failed). Rules in `src/domain/modeAvailability.ts` (FR-JRN-11) |
 | POST | `/track/:token/location` | public: the phone's background service sends location with the journey's private track token (no sign-in). 410 once the journey ends |
 | GET | `/trusting` | people whose trusted contact I am |
 | GET | `/following` | journeys in progress that others shared with you |

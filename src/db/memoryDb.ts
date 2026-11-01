@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
 import type {
+  FamilyMember,
+  AdminNotificationRow,
+  AdminUser,
   AuthUser,
   BillingTicket,
   Household,
@@ -24,7 +27,7 @@ import type {
   SosEvent,
   WatchLink,
 } from '../types.js';
-import type { Db, JourneyPatch, ListJourneysOptions } from './types.js';
+import type { Db, JourneyPatch, ListJourneysOptions, ProfilePatch } from './types.js';
 
 const OPEN: JourneyStatus[] = ['active', 'overdue'];
 
@@ -34,7 +37,7 @@ const OPEN: JourneyStatus[] = ['active', 'overdue'];
  * (enforced in config).
  */
 export class MemoryDb implements Db {
-  profiles = new Map<string, Profile & { deletionRequested?: boolean }>();
+  profiles = new Map<string, Profile & { deletionRequested?: boolean; email?: string | null }>();
   contacts = new Map<string, Contact & { ownerId: string; contactUserId?: string | null }>();
   journeys = new Map<string, Journey & { ownerId: string }>();
   points = new Map<string, LocationPoint[]>();
@@ -61,24 +64,51 @@ export class MemoryDb implements Db {
   async upsertProfile(user: AuthUser): Promise<Profile> {
     const existing = this.profiles.get(user.id);
     if (existing) return existing;
-    const p: Profile = {
+    const p: Profile & { email: string | null } = {
       id: user.id,
+      email: user.email,
       displayName: user.displayName ?? '',
       phone: null,
       avatarUrl: null,
+      countryCode: null,
+      role: 'USER',
       createdAt: new Date().toISOString(),
     };
     this.profiles.set(user.id, p);
     return p;
   }
 
-  async updateProfile(id: string, patch: { displayName?: string; phone?: string | null; avatarUrl?: string | null }): Promise<Profile> {
+  async updateProfile(id: string, patch: ProfilePatch): Promise<Profile> {
     const p = this.profiles.get(id);
     if (!p) throw new Error('profile missing');
     if (patch.displayName !== undefined) p.displayName = patch.displayName;
     if (patch.phone !== undefined) p.phone = patch.phone;
     if (patch.avatarUrl !== undefined) p.avatarUrl = patch.avatarUrl;
+    if (patch.countryCode !== undefined) p.countryCode = patch.countryCode;
     return p;
+  }
+
+  async listUsersForAdmin(): Promise<AdminUser[]> {
+    const journeys = [...this.journeys.values()];
+    return [...this.profiles.values()]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(({ deletionRequested, email, ...p }) => {
+        const mine = journeys.filter((j) => j.ownerId === p.id);
+        const count = (s: JourneyStatus) => mine.filter((j) => j.status === s).length;
+        return {
+          ...p,
+          email: email ?? null,
+          deletionRequested: !!deletionRequested,
+          journeys: {
+            total: mine.length,
+            active: count('active'),
+            overdue: count('overdue'),
+            completed: count('completed'),
+            cancelled: count('cancelled'),
+            lastStartedAt: mine.map((j) => j.startedAt).sort().at(-1) ?? null,
+          },
+        };
+      });
   }
 
   async getDisplayName(id: string): Promise<string> {
@@ -165,6 +195,30 @@ export class MemoryDb implements Db {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, limit)
       .map(({ userId: _u, ...n }) => n);
+  }
+
+  async listNotificationsForAdmin(limit: number): Promise<AdminNotificationRow[]> {
+    return [...this.notifications]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit)
+      .map((n) => ({
+        id: n.id,
+        userId: n.userId,
+        type: n.type,
+        title: n.title,
+        body: n.body,
+        journeyId: typeof n.data.journeyId === 'string' ? n.data.journeyId : null,
+        place: typeof n.data.place === 'string' ? n.data.place : null,
+        read: n.read,
+        createdAt: n.createdAt,
+      }));
+  }
+
+  async listJourneysForAdmin(limit: number): Promise<(Journey & { ownerId: string })[]> {
+    return [...this.journeys.values()]
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .slice(0, limit)
+      .map((j) => ({ ...strip(j), ownerId: j.ownerId }));
   }
 
   async countUnreadNotifications(userId: string): Promise<number> {
@@ -351,6 +405,22 @@ export class MemoryDb implements Db {
     return n;
   }
 
+  async listOpenJourneysForSweep(): Promise<(Journey & { ownerId: string })[]> {
+    return [...this.journeys.values()].filter((j) => OPEN.includes(j.status)).map((j) => ({ ...j }));
+  }
+
+  async claimStaleAlert(journeyId: string, previous: string | null, nowIso: string): Promise<boolean> {
+    const j = this.journeys.get(journeyId);
+    if (!j || (j.staleAlertAt ?? null) !== previous) return false;
+    j.staleAlertAt = nowIso;
+    return true;
+  }
+
+  async setSharingPaused(journeyId: string, paused: boolean): Promise<void> {
+    const j = this.journeys.get(journeyId);
+    if (j) j.sharingPaused = paused;
+  }
+
   async addLocationPoints(journeyId: string, points: LocationPoint[]): Promise<void> {
     const list = this.points.get(journeyId) ?? [];
     list.push(...points);
@@ -438,6 +508,61 @@ export class MemoryDb implements Db {
       .filter((c) => c.email.toLowerCase() === email.toLowerCase() && c.at >= sinceIso)
       .sort((a, b) => b.at.localeCompare(a.at))[0];
     return found ? { userId: found.userId, planKey: found.planKey } : null;
+  }
+
+  family = new Map<string, FamilyMember>();
+
+  async listFamilyMembers(ownerId: string): Promise<FamilyMember[]> {
+    return [...this.family.values()]
+      .filter((m) => m.ownerId === ownerId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((m) => ({ ...m }));
+  }
+
+  async addFamilyMember(ownerId: string, email: string): Promise<FamilyMember> {
+    const m: FamilyMember = {
+      id: randomUUID(),
+      ownerId,
+      email: email.toLowerCase(),
+      memberUserId: null,
+      status: 'invited',
+      createdAt: new Date().toISOString(),
+      acceptedAt: null,
+    };
+    this.family.set(m.id, m);
+    return { ...m };
+  }
+
+  async getFamilyMember(id: string): Promise<FamilyMember | null> {
+    const m = this.family.get(id);
+    return m ? { ...m } : null;
+  }
+
+  async listFamilyInvitesByEmail(email: string): Promise<FamilyMember[]> {
+    return [...this.family.values()]
+      .filter((m) => m.status === 'invited' && m.email === email.toLowerCase())
+      .map((m) => ({ ...m }));
+  }
+
+  async getFamilyMembershipOf(userId: string): Promise<FamilyMember | null> {
+    const m = [...this.family.values()].find((x) => x.status === 'accepted' && x.memberUserId === userId);
+    return m ? { ...m } : null;
+  }
+
+  async answerFamilyInvite(id: string, userId: string, status: 'accepted' | 'declined'): Promise<FamilyMember | null> {
+    const m = this.family.get(id);
+    if (!m || m.status !== 'invited') return null;
+    m.status = status;
+    m.memberUserId = userId;
+    m.acceptedAt = status === 'accepted' ? new Date().toISOString() : null;
+    return { ...m };
+  }
+
+  async cancelFamilyInvite(ownerId: string, id: string): Promise<FamilyMember | null> {
+    const m = this.family.get(id);
+    if (!m || m.ownerId !== ownerId || m.status !== 'invited') return null;
+    m.status = 'cancelled';
+    return { ...m };
   }
 
   async getHousehold(ownerId: string): Promise<Household | null> {

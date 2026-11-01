@@ -1,4 +1,7 @@
 import type {
+  FamilyMember,
+  AdminNotificationRow,
+  AdminUser,
   AuthUser,
   BillingTicket,
   Household,
@@ -23,6 +26,13 @@ import type {
   WatchLink,
 } from '../types.js';
 
+export interface ProfilePatch {
+  displayName?: string;
+  phone?: string | null;
+  avatarUrl?: string | null;
+  countryCode?: string | null;
+}
+
 export interface JourneyPatch {
   status?: JourneyStatus;
   expectedArrival?: string;
@@ -45,7 +55,13 @@ export interface Db {
   authenticate(token: string): Promise<AuthUser | null>;
 
   upsertProfile(user: AuthUser): Promise<Profile>;
-  updateProfile(id: string, patch: { displayName?: string; phone?: string | null; avatarUrl?: string | null }): Promise<Profile>;
+  updateProfile(id: string, patch: ProfilePatch): Promise<Profile>;
+  /** Everyone, newest first, with journey counts. Only the admin routes call this. */
+  listUsersForAdmin(): Promise<AdminUser[]>;
+  /** Everyone's notifications, newest first. Admin routes only. */
+  listNotificationsForAdmin(limit: number): Promise<AdminNotificationRow[]>;
+  /** Everyone's journeys, newest first. Admin routes only. */
+  listJourneysForAdmin(limit: number): Promise<(Journey & { ownerId: string })[]>;
   getDisplayName(id: string): Promise<string>;
   requestAccountDeletion(id: string): Promise<void>;
 
@@ -94,6 +110,11 @@ export interface Db {
   /** Applies the patch only if the journey is currently in one of `fromStatuses`. Returns null otherwise. */
   updateJourney(ownerId: string, id: string, patch: JourneyPatch, fromStatuses: JourneyStatus[]): Promise<Journey | null>;
   markOverdue(nowIso: string): Promise<number>;
+  /** Every journey in progress (any owner), for the scheduled sweep. */
+  listOpenJourneysForSweep(): Promise<(Journey & { ownerId: string })[]>;
+  /** Compare-and-set like [claimProgressUpdate], so one quiet spell is reported once. */
+  claimStaleAlert(journeyId: string, previous: string | null, nowIso: string): Promise<boolean>;
+  setSharingPaused(journeyId: string, paused: boolean): Promise<void>;
   /**
    * Takes the right to send the next progress update: succeeds only if
    * `lastProgressAt` still equals [previous], so concurrent callers send once.
@@ -125,6 +146,19 @@ export interface Db {
   recordCheckout(c: { userId: string; email: string; planKey: PlanKey; sessionId: string | null }): Promise<void>;
   /** The newest checkout started with this email since [sinceIso]. */
   findLatestCheckoutByEmail(email: string, sinceIso: string): Promise<{ userId: string; planKey: PlanKey } | null>;
+
+  /** Arrivo Plus Family: everyone the owner invited, newest last (cancelled ones too). */
+  listFamilyMembers(ownerId: string): Promise<FamilyMember[]>;
+  addFamilyMember(ownerId: string, email: string): Promise<FamilyMember>;
+  getFamilyMember(id: string): Promise<FamilyMember | null>;
+  /** Pending invitations for this email (lower case). */
+  listFamilyInvitesByEmail(email: string): Promise<FamilyMember[]>;
+  /** The Family this person accepted, if any. */
+  getFamilyMembershipOf(userId: string): Promise<FamilyMember | null>;
+  /** Only an invitation still waiting changes; returns null otherwise. */
+  answerFamilyInvite(id: string, userId: string, status: 'accepted' | 'declined'): Promise<FamilyMember | null>;
+  /** The owner withdraws an invitation nobody answered yet. Null when it cannot. */
+  cancelFamilyInvite(ownerId: string, id: string): Promise<FamilyMember | null>;
 
   getHousehold(ownerId: string): Promise<Household | null>;
   /** Creates or replaces the owner's household. */

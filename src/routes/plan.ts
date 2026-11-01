@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 
 import type { Db } from '../db/types.js';
+import { AppError } from '../lib/errors.js';
 import type { RoutingProvider } from '../lib/routing.js';
 import { requireAuth } from '../middleware/auth.js';
 import { parse } from '../middleware/errors.js';
@@ -30,6 +31,7 @@ const planSchema = z.object({
 });
 
 const stationsSchema = z.object({ lat, lng, mode: z.enum(['train', 'metro']) });
+const availabilitySchema = z.object({ oLat: lat, oLng: lng, dLat: lat, dLng: lng });
 
 /** Distance, time and the path on the map for a trip from A to B. */
 export function planRoutes(db: Db, routing: RoutingProvider): Router {
@@ -58,10 +60,23 @@ export function planRoutes(db: Db, routing: RoutingProvider): Router {
     res.json(plan);
   });
 
-  /** Railway or metro stations near a place, closest first. */
+  /**
+   * Railway or metro stations near a place, closest first. When every search failed the
+   * answer is 503, not an empty list, so the app does not say "no station" by mistake.
+   */
   r.get('/routes/stations', async (req, res) => {
     const q = parse(stationsSchema, req.query);
-    res.json({ items: await routing.stations({ lat: q.lat, lng: q.lng }, q.mode) });
+    const found = await routing.findStations({ lat: q.lat, lng: q.lng }, q.mode);
+    if (found.failed) throw new AppError(503, 'stations_unavailable', 'We could not check for stations right now.');
+    res.json({ items: found.stations });
+  });
+
+  /** For each way of travelling: available, estimate or unavailable, with the reason (FR-JRN-11). */
+  r.get('/routes/availability', async (req, res) => {
+    const q = parse(availabilitySchema, req.query);
+    res.json({
+      modes: await routing.availability({ lat: q.oLat, lng: q.oLng }, { lat: q.dLat, lng: q.dLng }),
+    });
   });
 
   return r;

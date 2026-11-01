@@ -129,6 +129,24 @@ describe('Arrivo Free allows one contact', () => {
   });
 });
 
+describe('website access (CORS)', () => {
+  const preflight = (origin: string) =>
+    api
+      .options('/v1/billing/checkout')
+      .set('Origin', origin)
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'content-type');
+
+  it('lets the website start a payment, with or without www', async () => {
+    expect((await preflight('https://site.test')).headers['access-control-allow-origin']).toBe('https://site.test');
+    expect((await preflight('https://www.site.test')).headers['access-control-allow-origin']).toBe('https://www.site.test');
+  });
+
+  it('does not let other websites in', async () => {
+    expect((await preflight('https://evil.test')).headers['access-control-allow-origin']).toBeUndefined();
+  });
+});
+
 describe('exchange rates', () => {
   const ok = (rates: Record<string, number>) => async () => ({
     ok: true,

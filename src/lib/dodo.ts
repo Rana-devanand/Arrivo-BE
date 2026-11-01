@@ -16,8 +16,11 @@ export interface BillingConfig {
   mode: 'test' | 'live';
   /** The signing secret of the webhook ("whsec_..."). */
   webhookSecret: string;
-  /** The Dodo product id of each way of paying for Arrivo Plus. */
-  products: Record<PlanKey, string>;
+  /**
+   * The Dodo product id of each way of paying for Arrivo Plus, and of Arrivo Plus Family
+   * when that product is set up (until then Family says "not open yet").
+   */
+  products: Record<Exclude<PlanKey, 'familyYearly'>, string> & { familyYearly?: string };
   /** The Arrivo website, without a trailing slash: where people go to pay. */
   siteUrl: string;
 }
@@ -39,8 +42,12 @@ async function call(cfg: BillingConfig, path: string, init: RequestInit): Promis
     throw unavailable();
   }
   if (!res.ok) {
-    // Only the status: the body can echo the customer's email.
-    logError(`[billing] Dodo ${init.method ?? 'GET'} ${path.split('?')[0]} returned ${res.status}`);
+    // The status and Dodo's short error code only: the body can echo the customer's email.
+    const code = await res
+      .json()
+      .then((b: { code?: unknown }) => (typeof b?.code === 'string' ? b.code.slice(0, 60) : ''))
+      .catch(() => '');
+    logError(`[billing] Dodo ${init.method ?? 'GET'} ${path.split('?')[0]} (${cfg.mode} mode) returned ${res.status}${code ? ` ${code}` : ''}`);
     throw unavailable();
   }
   return (await res.json()) as Record<string, unknown>;
@@ -51,10 +58,12 @@ export async function createCheckoutSession(
   cfg: BillingConfig,
   args: { planKey: PlanKey; email: string; name?: string; userId: string },
 ): Promise<{ sessionId: string | null; checkoutUrl: string }> {
+  const product = cfg.products[args.planKey];
+  if (!product) throw new AppError(503, 'billing_unavailable', 'This plan is not open yet. Please check back soon.');
   const out = await call(cfg, '/checkouts', {
     method: 'POST',
     body: JSON.stringify({
-      product_cart: [{ product_id: cfg.products[args.planKey], quantity: 1 }],
+      product_cart: [{ product_id: product, quantity: 1 }],
       customer: { email: args.email, ...(args.name ? { name: args.name } : {}) },
       return_url: `${cfg.siteUrl}/pricing/success`,
       cancel_url: `${cfg.siteUrl}/pricing/cancelled`,

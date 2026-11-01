@@ -80,7 +80,8 @@ export async function maybeSendProgress(
       type: 'journey_progress',
       title: where ? `${who} is ${where}` : `${who} is on the way`,
       body: `Heading to ${journey.destinationName}, arriving ${clock(journey.expectedArrival)}. Tap to see the live map.`,
-      data: { journeyId: journey.id },
+      // The coarse place is kept on its own too, for the admin view (never coordinates).
+      data: { journeyId: journey.id, ...(where ? { place: where } : {}) },
     });
     // What went out, without the place itself: scope says how detailed it was.
     const scope = !where ? 'none' : journey.distanceKm > 0 && journey.distanceKm < LOCAL_TRIP_KM ? 'local' : 'regional';

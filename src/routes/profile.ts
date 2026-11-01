@@ -18,6 +18,14 @@ const updateSchema = z.object({
   phone: phone.nullable().optional(),
   /** The Cloudinary address of the profile photo, or null to remove it. */
   avatarUrl: z.string().url().max(500).nullable().optional(),
+  /** ISO 3166-1 alpha-2 code of the country the person travels in. */
+  countryCode: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z]{2}$/, 'Pick a country from the list')
+    .nullable()
+    .optional(),
 });
 
 const deviceSchema = z.object({

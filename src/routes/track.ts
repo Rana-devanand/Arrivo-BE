@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
 
 import { isOpen } from '../domain/journeyRules.js';
 import type { Db } from '../db/types.js';
@@ -42,6 +43,14 @@ export function trackRoutes(db: Db, places: PlacesProvider): Router {
     await db.addLocationPoints(j.id, sane);
     await maybeSendProgress(db, places, j, ownerId, sane);
     res.status(202).json({ accepted: sane.length, status: j.status, expectedArrival: j.expectedArrival });
+  });
+
+  /** "Pause sharing" on the phone: the scheduled check then expects silence. */
+  r.post('/track/:token/sharing', async (req, res) => {
+    const { journey: j } = await open(String(req.params.token));
+    const { paused } = parse(z.object({ paused: z.boolean() }), req.body);
+    await db.setSharingPaused(j.id, paused);
+    res.json({ paused });
   });
 
   return r;

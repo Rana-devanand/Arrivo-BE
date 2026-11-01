@@ -2,7 +2,19 @@ import { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 
-import { LIMITS, PLAN_KEYS, PLAN_MONTHS, PLAN_NAMES, PLAN_TAGLINES, PRICES_USD_CENTS, planFeatures, hasPlus, planOf } from '../domain/plans.js';
+import {
+  FAMILY_KEY,
+  FAMILY_MEMBERS,
+  LIMITS,
+  PLAN_MONTHS,
+  PLAN_NAMES,
+  PLAN_TAGLINES,
+  PLUS_KEYS,
+  PRICES_USD_CENTS,
+  planDetails,
+  planFeatures,
+  hasPlus,
+} from '../domain/plans.js';
 import type { Db } from '../db/types.js';
 import { COUNTRIES } from '../domain/countries.js';
 import { applyDodoEvent, type DodoEvent } from '../lib/billingEvents.js';
@@ -20,10 +32,11 @@ import { createRatesProvider, type RatesProvider } from '../lib/rates.js';
 import { requireAuth, userOf } from '../middleware/auth.js';
 import { parse } from '../middleware/errors.js';
 
-const planSchema = z.object({ plan: z.enum(['monthly', 'sixMonths', 'yearly']).default('yearly') });
+const planKey = z.enum(['monthly', 'sixMonths', 'yearly', 'familyYearly']);
+const planSchema = z.object({ plan: planKey.default('yearly') });
 const checkoutSchema = z.object({
   ticket: z.string().min(20).max(100),
-  plan: z.enum(['monthly', 'sixMonths', 'yearly']).optional(),
+  plan: planKey.optional(),
 });
 
 /** A pass from the app to the website lasts this long. */
@@ -56,7 +69,7 @@ export function billingRoutes(
     res.json({
       currency: 'USD',
       available: billing !== null,
-      plans: PLAN_KEYS.map((key) => {
+      plans: PLUS_KEYS.map((key) => {
         const months = PLAN_MONTHS[key];
         const price = PRICES_USD_CENTS[key];
         return {
@@ -69,6 +82,17 @@ export function billingRoutes(
       }),
       free: { name: PLAN_NAMES.free, tagline: PLAN_TAGLINES.free, features: planFeatures('free'), ...LIMITS.free },
       plus: { name: PLAN_NAMES.plus, tagline: PLAN_TAGLINES.plus, features: planFeatures('plus'), ...LIMITS.plus },
+      family: {
+        key: FAMILY_KEY,
+        name: PLAN_NAMES.family,
+        tagline: PLAN_TAGLINES.family,
+        features: planFeatures('family'),
+        months: PLAN_MONTHS[FAMILY_KEY],
+        priceCents: PRICES_USD_CENTS[FAMILY_KEY],
+        members: FAMILY_MEMBERS,
+        available: !!billing?.products.familyYearly,
+        ...LIMITS.family,
+      },
     });
   });
 
@@ -84,20 +108,25 @@ export function billingRoutes(
   /** Which plan this person is on, and its limits. */
   r.get('/billing/me', auth, async (req, res) => {
     const user = userOf(req);
-    const sub = await db.getSubscription(user.id);
-    const plan = await planOf(db, user.id);
+    const { plan, sub, via } = await planDetails(db, user.id);
     const used = (await db.listContacts(user.id)).length;
+    // Plus through someone's Family: their plan's dates, not the member's own.
+    const paid = via ? via.ownerSub : sub;
+    const owner = via ? (await db.getDisplayName(via.ownerId)) || 'Your family' : null;
     res.json({
       plan,
       name: PLAN_NAMES[plan],
-      status: sub?.status ?? null,
-      intervalMonths: sub?.intervalMonths ?? null,
+      planKey: paid?.planKey ?? null,
+      status: paid?.status ?? null,
+      intervalMonths: paid?.intervalMonths ?? null,
       // Paid time runs to this date; after a cancellation it is the last day of Plus.
-      renewsAt: sub?.currentPeriodEnd ?? null,
-      cancelled: sub?.status === 'cancelled' && hasPlus(sub),
+      renewsAt: paid?.currentPeriodEnd ?? null,
+      cancelled: paid?.status === 'cancelled' && hasPlus(paid),
       limits: LIMITS[plan],
       contactsUsed: used,
-      canManage: !!sub?.dodoCustomerId,
+      // Only the person who pays can manage it.
+      canManage: !via && !!sub?.dodoCustomerId,
+      familyMemberOf: via ? { ownerName: owner } : null,
     });
   });
 
@@ -114,9 +143,12 @@ export function billingRoutes(
       const user = userOf(req);
       const { plan } = parse(planSchema, req.body ?? {});
       if (!user.email) throw badRequest('Your account has no email address. Add one to subscribe.');
+      if (plan === FAMILY_KEY && !billing.products.familyYearly) {
+        throw new AppError(503, 'billing_unavailable', 'Arrivo Plus Family is not open yet. Please check back soon.');
+      }
       const current = await db.getSubscription(user.id);
       if (current?.status === 'active' && hasPlus(current)) {
-        throw conflict('You already have Arrivo Plus. Use "Manage subscription" to change it.');
+        throw conflict('You already have a paid plan. Use "Manage subscription" to change it.');
       }
       const now = Date.now();
       await db.deleteExpiredBillingTickets(new Date(now).toISOString());

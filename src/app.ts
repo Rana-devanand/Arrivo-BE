@@ -12,7 +12,9 @@ import { noPlaces, type PlacesProvider } from './lib/places.js';
 import { noRouting, type RoutingProvider } from './lib/routing.js';
 import type { BillingConfig } from './lib/dodo.js';
 import type { RatesProvider } from './lib/rates.js';
+import { adminRoutes } from './routes/admin.js';
 import { billingRoutes, type WithRawBody } from './routes/billing.js';
+import { familyRoutes } from './routes/family.js';
 import { householdRoutes } from './routes/household.js';
 import { planRoutes } from './routes/plan.js';
 import { notificationRoutes } from './routes/notifications.js';
@@ -44,7 +46,13 @@ export function createApp(
 
   const origins = config.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
   // The website calls the checkout from the browser, so its address is always allowed.
-  if (billing) origins.push(new URL(billing.siteUrl).origin);
+  if (billing) {
+    // With and without "www.", so either address of the website can start a payment.
+    const site = new URL(billing.siteUrl);
+    origins.push(site.origin);
+    const other = site.hostname.startsWith('www.') ? site.hostname.slice(4) : `www.${site.hostname}`;
+    origins.push(`${site.protocol}//${other}${site.port ? `:${site.port}` : ''}`);
+  }
   // Mobile apps do not send an Origin header; this only affects browsers.
   app.use(cors({ origin: origins.length ? origins : false }));
   // The raw bytes are kept for the payment webhook, whose signature covers them exactly.
@@ -76,16 +84,18 @@ export function createApp(
 
   // Public routes first (no sign-in), then authenticated ones.
   app.use('/v1', watchRoutes(db));
-  app.use('/v1', internalRoutes(db, config.CRON_SECRET));
+  app.use('/v1', internalRoutes(db, config.CRON_SECRET, places));
   // Public (the background service has no sign-in): keep it before the signed-in routers.
   app.use('/v1', trackRoutes(db, places));
   // Plans, the website's checkout and Dodo's webhook are public; the routes that need a
   // sign-in say so themselves. It must come before the routers that require one for everything.
   app.use('/v1', billingRoutes(db, billing, rates));
   app.use('/v1', profileRoutes(db, photos));
+  app.use('/v1', adminRoutes(db));
   app.use('/v1', contactRoutes(db, { devRoutes: config.ENABLE_DEV_ROUTES === 'true', mailer }));
   app.use('/v1', invitationRoutes(db));
   app.use('/v1', householdRoutes(db));
+  app.use('/v1', familyRoutes(db));
   app.use('/v1', placeRoutes(db, places));
   app.use('/v1', planRoutes(db, routing));
   app.use('/v1', notificationRoutes(db));

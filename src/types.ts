@@ -21,7 +21,22 @@ export interface AuthUser {
 }
 
 /** The three ways to pay for Arrivo Plus. */
-export type PlanKey = 'monthly' | 'sixMonths' | 'yearly';
+/** Ways of paying: three for Arrivo Plus, one for Arrivo Plus Family (yearly only). */
+export type PlanKey = 'monthly' | 'sixMonths' | 'yearly' | 'familyYearly';
+
+export type FamilyMemberStatus = 'invited' | 'accepted' | 'declined' | 'cancelled';
+
+/** Someone the owner of Arrivo Plus Family shares the plan with (2 at most). */
+export interface FamilyMember {
+  id: string;
+  ownerId: string;
+  /** Lower case. The invitation is for whoever signs in with this address. */
+  email: string;
+  memberUserId: string | null;
+  status: FamilyMemberStatus;
+  createdAt: string;
+  acceptedAt: string | null;
+}
 
 export type SubscriptionStatus = 'active' | 'past_due' | 'on_hold' | 'cancelled' | 'expired' | 'failed';
 
@@ -36,6 +51,8 @@ export interface Subscription {
   currentPeriodEnd: string | null;
   /** Time of the newest webhook applied. */
   lastEventAt: string;
+  /** Which product was bought; `familyYearly` is Arrivo Plus Family. Null when not known. */
+  planKey?: PlanKey | null;
 }
 
 /** A short-lived pass from the app to the website, naming who is paying. Only its hash is stored. */
@@ -54,12 +71,58 @@ export interface Household {
   updatedAt: string;
 }
 
+/** Set by a person in the SQL editor, never through the API. */
+export type UserRole = 'USER' | 'ADMIN';
+
 export interface Profile {
   id: string;
   displayName: string;
   phone: string | null;
   avatarUrl: string | null;
+  /** ISO 3166-1 alpha-2, e.g. "IN". Null until the person picks one. */
+  countryCode: string | null;
+  role: UserRole;
   createdAt: string;
+}
+
+export interface JourneyCounts {
+  total: number;
+  active: number;
+  overdue: number;
+  completed: number;
+  cancelled: number;
+  lastStartedAt: string | null;
+}
+
+/**
+ * A stored notification as the admin view reads it. Only the journey id and the
+ * coarse place are taken from `data`: SOS coordinates and photo links stay out.
+ */
+export interface AdminNotificationRow {
+  id: string;
+  /** Who received it. */
+  userId: string;
+  type: string;
+  title: string;
+  body: string;
+  journeyId: string | null;
+  place: string | null;
+  read: boolean;
+  createdAt: string;
+}
+
+/** One row of the admin dashboard. */
+export interface AdminUser {
+  id: string;
+  displayName: string;
+  email: string | null;
+  phone: string | null;
+  avatarUrl: string | null;
+  countryCode: string | null;
+  role: UserRole;
+  createdAt: string;
+  deletionRequested: boolean;
+  journeys: JourneyCounts;
 }
 
 export interface Contact {
@@ -84,6 +147,8 @@ export type NotificationType =
   | 'journey_cancelled'
   | 'journey_delayed'
   | 'journey_progress'
+  /** No location reached the server for a while (FR-TRK-22). */
+  | 'location_stale'
   | 'attachment'
   | 'sos';
 
@@ -164,6 +229,10 @@ export interface Journey {
   /** When the last update went out (the start time before the first one). */
   lastProgressAt: string | null;
   contactIds: string[];
+  /** When contacts were last told the location stopped updating (FR-TRK-22). */
+  staleAlertAt?: string | null;
+  /** The traveller paused sharing: silence is expected, not a problem. */
+  sharingPaused?: boolean;
 }
 
 /** The traveller picks any interval between these (the app also offers presets). */
