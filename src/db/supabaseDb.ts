@@ -138,6 +138,8 @@ const toJourney = (r: Row, contactIds: string[]): Journey => ({
   routePolyline: r.route_polyline ?? null,
   routeSteps: r.route_steps ?? null,
   vehicleImageUrl: r.vehicle_image_url ?? null,
+  destinationImageUrl: r.destination_image_url ?? null,
+  destinationAddress: r.destination_address ?? null,
   trackToken: r.track_token ?? null,
   updateIntervalMinutes: r.update_interval_minutes ?? null,
   lastProgressAt: r.last_progress_at ?? null,
@@ -581,6 +583,8 @@ export class SupabaseDb implements Db {
         route_polyline: input.routePolyline,
         route_steps: input.routeSteps,
         vehicle_image_url: input.vehicleImageUrl,
+        destination_image_url: input.destinationImageUrl,
+        destination_address: input.destinationAddress,
         track_token: input.trackToken,
         update_interval_minutes: input.updateIntervalMinutes,
         // The first update comes one interval after the start.
@@ -756,6 +760,20 @@ export class SupabaseDb implements Db {
 
   async setSafetyTimer(ownerId: string, endsAt: string): Promise<void> {
     check(await this.sb.from('safety_timers').upsert({ owner_id: ownerId, ends_at: endsAt }), 'set safety timer');
+  }
+
+  async getCache(key: string, maxAgeMs: number): Promise<unknown | null> {
+    const res = await this.sb.from('api_cache').select('value, fetched_at').eq('key', key).maybeSingle();
+    const row = check(res, 'read cache') as Row | null;
+    if (!row || Date.now() - new Date(row.fetched_at).getTime() > maxAgeMs) return null;
+    return row.value ?? null;
+  }
+
+  async setCache(key: string, value: unknown): Promise<void> {
+    check(
+      await this.sb.from('api_cache').upsert({ key, value, fetched_at: new Date().toISOString() }, { onConflict: 'key' }),
+      'write cache',
+    );
   }
 
   async getSafetyTimer(ownerId: string): Promise<string | null> {

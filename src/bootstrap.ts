@@ -12,6 +12,8 @@ import type { BillingConfig } from './lib/dodo.js';
 import { errorText, logError, logInfo } from './lib/log.js';
 import { fcmSender, setPushSender } from './lib/push.js';
 import { googleRouting, noRouting } from './lib/routing.js';
+import { googleNearbyServices, noNearbyServices } from './lib/nearbyServices.js';
+import { wikipedia } from './lib/wiki.js';
 
 /** Dodo Payments settings, or null when billing is not fully set up (paid plans then say "not open yet"). */
 export function billingFrom(config: Config): BillingConfig | null {
@@ -70,5 +72,9 @@ export function createFromEnv(): { app: Express; db: Db; config: Config; places:
   const routesKey =config.GOOGLE_ROUTES_API_KEY || config.GOOGLE_PLACES_API_KEY;
   const routing = routesKey ? googleRouting(routesKey) : noRouting;
 
-  return { app: createApp(db, config, mailer, places, photos, routing, billingFrom(config)), db, config, places };
+  // Wikipedia, Wikidata and Commons need no key. Police and hospital lookups use the Places key.
+  const nearby = config.GOOGLE_PLACES_API_KEY ? googleNearbyServices(config.GOOGLE_PLACES_API_KEY) : noNearbyServices;
+  const extras = { wiki: wikipedia(), nearby };
+
+  return { app: createApp(db, config, mailer, places, photos, routing, billingFrom(config), undefined, extras), db, config, places };
 }

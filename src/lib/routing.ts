@@ -1,3 +1,4 @@
+import { googleReason } from './googleError.js';
 import { checkAvailability, type ModeAvailability, type StationLookup } from '../domain/modeAvailability.js';
 import { decodePolyline, encodePolyline, haversine, type LatLng } from './polyline.js';
 
@@ -294,7 +295,7 @@ export function googleRouting(apiKey: string): RoutingProvider {
         signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) {
-        console.error(`[routes] station search (${endpoint}) returned ${res.status}`);
+        console.error(`[routes] station search (${endpoint}) returned ${res.status}: ${await googleReason(res)}`);
         return null;
       }
       return ((await res.json()) as { places?: Record<string, any>[] }).places ?? [];

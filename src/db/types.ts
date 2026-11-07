@@ -130,6 +130,10 @@ export interface Db {
 
   createSos(ownerId: string, input: { journeyId: string | null; lat: number | null; lng: number | null }): Promise<SosEvent>;
 
+  /** Shared lookup cache (places and areas, never people). Null when missing or older than [maxAgeMs]. */
+  getCache(key: string, maxAgeMs: number): Promise<unknown | null>;
+  setCache(key: string, value: unknown): Promise<void>;
+
   setSafetyTimer(ownerId: string, endsAt: string): Promise<void>;
   getSafetyTimer(ownerId: string): Promise<string | null>;
   clearSafetyTimer(ownerId: string): Promise<void>;

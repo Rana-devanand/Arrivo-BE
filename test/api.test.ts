@@ -305,11 +305,11 @@ describe('invitations', () => {
 });
 
 describe('watch link', () => {
-  it('shows a limited public view, hides location after arrival and can be revoked', async () => {
+  it('shows a limited public view, and after arrival says so without any location', async () => {
     await api.put('/v1/me').set(A).send({ displayName: 'Alice Doe' });
     const c = await acceptedContact();
     const j = (await api.post('/v1/journeys').set(A).send(journeyBody([c], { createWatchLink: true }))).body;
-    expect(j.watch.url).toContain('https://arrivo.test/w/');
+    expect(j.watch.url).toContain('https://arrivo.test/w#');
     const token = j.watch.token as string;
 
     await api
@@ -325,9 +325,29 @@ describe('watch link', () => {
     expect(view.body).not.toHaveProperty('id');
 
     await api.post(`/v1/journeys/${j.id}/complete`).set(A);
-    // Completing revokes links, so the public view is closed.
-    expect((await api.get(`/v1/watch/${token}`)).status).toBe(410);
+    // The link stays open a little while, so the person watching sees that they arrived. No location, no route.
+    const after = await api.get(`/v1/watch/${token}`);
+    expect(after.status).toBe(200);
+    expect(after.body.status).toBe('completed');
+    expect(after.body.arrivedAt).toBeTruthy();
+    expect(after.body.lastLocation).toBeNull();
+    expect(after.body.routePolyline).toBeNull();
     expect((await api.get('/v1/watch/short')).status).toBe(404);
+
+    // Two hours after the journey ended the link is closed for good.
+    const stored = db.journeys.get(j.id)!;
+    stored.endedAt = new Date(Date.now() - 2 * 60 * 60 * 1000 - 60_000).toISOString();
+    expect((await api.get(`/v1/watch/${token}`)).status).toBe(410);
+  });
+
+  it('says the journey ended when it was cancelled, with no location', async () => {
+    const c = await acceptedContact();
+    const j = (await api.post('/v1/journeys').set(A).send(journeyBody([c], { createWatchLink: true }))).body;
+    await api.post(`/v1/journeys/${j.id}/cancel`).set(A);
+    const view = await api.get(`/v1/watch/${j.watch.token}`);
+    expect(view.status).toBe(200);
+    expect(view.body.status).toBe('cancelled');
+    expect(view.body.lastLocation).toBeNull();
   });
 
   it('can be revoked while the journey is running', async () => {

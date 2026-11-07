@@ -1,4 +1,5 @@
 import { AppError } from './errors.js';
+import { googleReason } from './googleError.js';
 
 export interface PlaceSuggestion {
   placeId: string;
@@ -107,7 +108,7 @@ export function googlePlaces(apiKey: string): PlacesProvider {
       throw new AppError(502, 'places_unreachable', 'Could not reach the place search service. Try again.');
     }
     if (!res.ok) {
-      console.error(`[places] Google returned ${res.status}`);
+      console.error(`[places] Google returned ${res.status}: ${await googleReason(res)}`);
       throw new AppError(502, 'places_error', 'Place search is having a problem. Try again in a moment.');
     }
     return res.json();

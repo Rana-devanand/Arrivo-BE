@@ -222,6 +222,10 @@ export interface Journey {
   routePolyline: string | null;
   routeSteps: PlannedStep[] | null;
   vehicleImageUrl: string | null;
+  /** A picture of the destination (Wikimedia), kept so "Repeat a trip" can show it for good. */
+  destinationImageUrl: string | null;
+  /** The destination's address as the person picked it, so its city, state and country can be read again. */
+  destinationAddress: string | null;
   /** Private key for the background service. Only the owner ever receives it. */
   trackToken: string | null;
   /** Minutes between "on the way" updates to the contacts, or null for none. */
@@ -258,6 +262,8 @@ export interface NewJourney {
   routePolyline: string | null;
   routeSteps: PlannedStep[] | null;
   vehicleImageUrl: string | null;
+  destinationImageUrl: string | null;
+  destinationAddress: string | null;
   trackToken: string | null;
   updateIntervalMinutes: number | null;
   contactIds: string[];

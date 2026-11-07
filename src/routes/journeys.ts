@@ -16,6 +16,8 @@ import { MAX_PROGRESS_MINUTES, MIN_PROGRESS_MINUTES, type Journey, type JourneyS
 
 const createSchema = z.object({
   destinationName: z.string().trim().min(1).max(160),
+  /** The address as the person picked it, e.g. "Hinjewadi, Pune, Maharashtra 411057, India". */
+  destinationAddress: z.string().trim().max(300).nullable().optional(),
   destinationLat: z.number().min(-90).max(90).nullable().optional(),
   destinationLng: z.number().min(-180).max(180).nullable().optional(),
   originName: z.string().trim().max(160).default('Current location'),
@@ -39,6 +41,8 @@ const createSchema = z.object({
     .max(40)
     .nullable()
     .optional(),
+  /** A picture of the destination, from Wikipedia or Commons (the app got it with the place's information). */
+  destinationImageUrl: z.string().max(500).nullable().optional(),
   /** Cloudinary photo of the number plate or ride, from POST /journeys/photo-ticket. */
   vehicleImageUrl: z.string().url().max(500).nullable().optional(),
   expectedArrival: z.string().datetime({ offset: true }),
@@ -77,6 +81,16 @@ export const pointsSchema = z.object({
     .max(100),
 });
 
+/** A picture served by Wikimedia (Wikipedia and Commons photos are all on *.wikimedia.org), over https. */
+export function isWikimediaImage(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && (u.hostname === 'wikimedia.org' || u.hostname.endsWith('.wikimedia.org'));
+  } catch {
+    return false;
+  }
+}
+
 const STATUSES: JourneyStatus[] = ['active', 'overdue', 'completed', 'cancelled'];
 
 export function journeyRoutes(db: Db, opts: { watchBaseUrl: string; photos: Cloudinary; places: PlacesProvider }): Router {
@@ -87,7 +101,7 @@ export function journeyRoutes(db: Db, opts: { watchBaseUrl: string; photos: Clou
     const token = randomBytes(16).toString('base64url');
     const expiresAt = new Date(new Date(journey.expectedArrival).getTime() + 24 * 60 * 60 * 1000).toISOString();
     const link = await db.createWatchLink({ token, journeyId: journey.id, ownerId, expiresAt });
-    return { token: link.token, url: `${opts.watchBaseUrl}/${link.token}`, expiresAt: link.expiresAt };
+    return { token: link.token, url: `${opts.watchBaseUrl}#${link.token}`, expiresAt: link.expiresAt };
   }
 
   /** A signed permit to upload a photo of the number plate / ride to Cloudinary. */
@@ -106,6 +120,10 @@ export function journeyRoutes(db: Db, opts: { watchBaseUrl: string; photos: Clou
     if (body.vehicleImageUrl && !opts.photos.isOwnPlate(body.vehicleImageUrl, user.id)) {
       throw badRequest('That photo is not valid. Attach it again from the app.');
     }
+
+    // Only Wikimedia pictures are kept: this address is stored and shown later, so it must not be any link a
+    // caller sends. It is a nice-to-have, so one that is not accepted is dropped and the journey still starts.
+    const destinationImageUrl = body.destinationImageUrl && isWikimediaImage(body.destinationImageUrl) ? body.destinationImageUrl : null;
 
     const existing = await db.getOpenJourney(user.id);
     if (existing) throw conflict('You already have a journey in progress', { journeyId: existing.id });
@@ -137,6 +155,8 @@ export function journeyRoutes(db: Db, opts: { watchBaseUrl: string; photos: Clou
       routePolyline: body.routePolyline ?? null,
       routeSteps: body.routeSteps ?? null,
       vehicleImageUrl: body.vehicleImageUrl ?? null,
+      destinationImageUrl,
+      destinationAddress: body.destinationAddress || null,
       trackToken: randomBytes(24).toString('base64url'),
       updateIntervalMinutes: body.updateIntervalMinutes,
       contactIds,
@@ -222,7 +242,8 @@ export function journeyRoutes(db: Db, opts: { watchBaseUrl: string; photos: Clou
       const patch = target === 'completed' ? { status: target, arrivedAt: now, endedAt: now } : { status: target, endedAt: now };
       const updated = await db.updateJourney(user.id, id, patch, ['active', 'overdue']);
       if (updated) {
-        await db.revokeWatchLinks(id, user.id).catch(() => undefined);
+        // The watch link stays open for a short while (WATCH_GRACE_MS) so whoever is watching sees
+        // "arrived safely" instead of a dead link. The public view shows no location once it ends.
         const who = (await db.getDisplayName(user.id)) || user.displayName || 'Someone';
         await notifyFollowers(db, user.id, updated.contactIds, {
           type: target === 'completed' ? 'journey_arrived' : 'journey_cancelled',

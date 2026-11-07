@@ -104,6 +104,8 @@ Run them in order with `supabase db push` (from `backend/`):
 - `20261021000006_track_token.sql`: private track token per journey (for the background service).
 - `20261021000005_notifications_recent_places.sql`: in-app notifications and recently picked places.
 - `20261021000004_route_and_plate.sql`: train and metro modes; planned route, origin and number plate photo on journeys.
+- `20261108000014_journey_destination_details.sql`: `destination_image_url` and `destination_address` on journeys (the picture for "Repeat a trip", and the address the destination information language is read from).
+- `20261107000013_api_cache.sql`: `api_cache`, the shared lookup cache for destination information and nearby services. Server-only (row level security on, no policies). Keys are places, never people.
 
 ## Environment
 
@@ -117,7 +119,9 @@ Run them in order with `supabase db push` (from `backend/`):
 | `CORS_ORIGINS` | empty | browser origins only; mobile apps ignore it |
 | `ENABLE_OVERDUE_JOB` | `false` | marks journeys overdue after the grace period |
 | `ENABLE_DEV_ROUTES` | `false` | dev-only "accept contact" route; rejected in production |
-| `WATCH_BASE_URL` | `https://arrivo.app/w` | base of public watch links |
+| `WATCH_BASE_URL` | unset | forces the start of watch links. Leave it unset: production uses `SITE_URL` (`https://tryarrivo.com/watch`), everything else uses the website on this machine (`http://localhost:3000/watch`). A link is `<base>#<secret>`; the browser never sends the part after the # to the website |
+| `SITE_URL` | `https://tryarrivo.com` in production | the live website: watch links, the origin the watch page may call this API from, and the billing return address |
+| `WIKIMEDIA_CONTACT` | | an email or web address added to the User-Agent on calls to Wikipedia, Wikidata and Commons. Wikimedia answers fewer "too fast" (429) replies to clients that say who they are |
 | `GOOGLE_PLACES_API_KEY` | | enables place search (Places API New + Geocoding). Empty = search answers 503, saved places still work |
 | `GOOGLE_ROUTES_API_KEY` | falls back to `GOOGLE_PLACES_API_KEY` | Routes API key for distance, time and the path on the map. Without it, trips are straight-line estimates |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | | enables profile photos. The server signs each upload, the phone uploads straight to Cloudinary |
@@ -190,9 +194,13 @@ All routes are under `/v1` and need `Authorization: Bearer <token>`, except
 | POST | `/journeys/:id/complete`, `/cancel` | end a journey (idempotent) |
 | POST | `/journeys/:id/location` | upload up to 100 location points |
 | POST / DELETE | `/journeys/:id/watch-link` | create / revoke a watch link |
-| GET | `/watch/:token` | public, read-only view for people without the app |
+| GET | `/watch/:token` | public, read-only data for the website's watch page (`/watch#<secret>`): status, `sharingPaused`, destination, route and last location while the journey runs. After it ends the link stays open for 2 hours and shows only the outcome, never a location |
 | GET / POST / DELETE | `/safety/timer` | safety timer ("I am safe" cancels) |
 | POST | `/safety/sos` | record an SOS |
+| GET | `/destination/info?lat&lng&name[&city][&region][&country]` | what to read about a destination (FR-DST-01): summary, history, facts, up to 12 sights within 10 km, and `local` (the article in the language of the state or country, from `region` and `country`, see `domain/localLanguage.ts`) when there is one. Wikipedia, Wikidata and Commons need no key. Cached 30 days in `api_cache`; 404 when nothing is written, 502 when every search failed (never "nothing written" by mistake) |
+| GET | `/destination/place?title` | one sight: description, image, coordinates (cached) |
+| GET | `/destination/photos?lat&lng[&radius]` | freely licensed Commons photos near a point, each with credit and licence (cached). A separate call because Commons is the slowest part |
+| GET | `/emergency/nearby?lat&lng` | police stations and hospitals within 40 km (Google Places, 10 each, with phone numbers), nearest first. Cached per 1 km cell for at most 30 days (FR-SAF-02) |
 
 Errors look like `{ "error": { "code", "message", "details?" } }`.
 
@@ -220,7 +228,7 @@ Errors look like `{ "error": { "code", "message", "details?" } }`.
 The repo includes `vercel.json` and `api/index.js`. Vercel runs the API as one serverless function (no port, no timers).
 
 1. Import the `backend` folder as the project root. Build command `npm run build` (already in vercel.json).
-2. In Project Settings > Environment Variables set: `NODE_ENV=production`, `DB_DRIVER=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WATCH_BASE_URL`, and the optional keys (`GOOGLE_PLACES_API_KEY`, `RESEND_API_KEY`, `CLOUDINARY_*`). If any required one is missing the function fails at start (500 FUNCTION_INVOCATION_FAILED); the Vercel logs name the missing setting.
+2. In Project Settings > Environment Variables set: `NODE_ENV=production`, `DB_DRIVER=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SITE_URL`, and the optional keys (`GOOGLE_PLACES_API_KEY`, `RESEND_API_KEY`, `CLOUDINARY_*`). If any required one is missing the function fails at start (500 FUNCTION_INVOCATION_FAILED); the Vercel logs name the missing setting.
 3. Check `https://<project>.vercel.app/health`.
 4. Overdue journeys: Vercel has no timer, so set `CRON_SECRET` (16+ characters) and call `GET /v1/internal/overdue` every minute with `Authorization: Bearer <CRON_SECRET>` (Vercel Cron on a paid plan, or any pinger).
 

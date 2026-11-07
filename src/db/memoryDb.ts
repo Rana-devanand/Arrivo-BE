@@ -44,6 +44,7 @@ export class MemoryDb implements Db {
   links = new Map<string, WatchLink>();
   sos: (SosEvent & { ownerId: string })[] = [];
   timers = new Map<string, string>();
+  cache = new Map<string, { at: number; value: unknown }>();
   saved = new Map<string, SavedPlace & { ownerId: string }>();
   notifications: (AppNotification & { userId: string })[] = [];
   recents = new Map<string, RecentPlace & { ownerId: string }>();
@@ -456,6 +457,15 @@ export class MemoryDb implements Db {
 
   async setSafetyTimer(ownerId: string, endsAt: string): Promise<void> {
     this.timers.set(ownerId, endsAt);
+  }
+
+  async getCache(key: string, maxAgeMs: number): Promise<unknown | null> {
+    const hit = this.cache.get(key);
+    return hit && Date.now() - hit.at <= maxAgeMs ? hit.value : null;
+  }
+
+  async setCache(key: string, value: unknown): Promise<void> {
+    this.cache.set(key, { at: Date.now(), value });
   }
 
   async getSafetyTimer(ownerId: string): Promise<string | null> {

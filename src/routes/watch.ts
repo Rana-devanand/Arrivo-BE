@@ -39,6 +39,9 @@ export function watchRoutes(db: Db): Router {
     res.json({
       travellerName: fullName.split(' ')[0] || 'Traveller',
       status: journey.status,
+      startedAt: journey.startedAt,
+      // Paused on purpose: a quiet location is then expected, not a worry.
+      sharingPaused: journey.sharingPaused === true,
       destinationName: journey.destinationName,
       expectedArrival: journey.expectedArrival,
       arrivedAt: journey.arrivedAt,

@@ -3,7 +3,7 @@ import express, { type Express } from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 
-import type { Config } from './config.js';
+import { siteOrigins, watchBaseUrl, type Config } from './config.js';
 import type { Db } from './db/types.js';
 import { errorHandler, notFoundHandler } from './middleware/errors.js';
 import { noopMailer, type Mailer } from './lib/mailer.js';
@@ -12,7 +12,10 @@ import { noPlaces, type PlacesProvider } from './lib/places.js';
 import { noRouting, type RoutingProvider } from './lib/routing.js';
 import type { BillingConfig } from './lib/dodo.js';
 import type { RatesProvider } from './lib/rates.js';
+import { noNearbyServices, type NearbyServicesProvider } from './lib/nearbyServices.js';
+import { noWiki, type WikiProvider } from './lib/wiki.js';
 import { adminRoutes } from './routes/admin.js';
+import { destinationRoutes } from './routes/destination.js';
 import { billingRoutes, type WithRawBody } from './routes/billing.js';
 import { familyRoutes } from './routes/family.js';
 import { householdRoutes } from './routes/household.js';
@@ -30,13 +33,15 @@ import { internalRoutes } from './routes/internal.js';
 
 export function createApp(
   db: Db,
-  config: Pick<Config, 'CORS_ORIGINS' | 'WATCH_BASE_URL' | 'ENABLE_DEV_ROUTES' | 'DB_DRIVER'> & { CRON_SECRET?: string },
+  config: Pick<Config, 'CORS_ORIGINS' | 'ENABLE_DEV_ROUTES' | 'DB_DRIVER'> &
+    Partial<Pick<Config, 'WATCH_BASE_URL' | 'SITE_URL' | 'NODE_ENV'>> & { CRON_SECRET?: string },
   mailer: Mailer = noopMailer,
   places: PlacesProvider = noPlaces,
   photos: Cloudinary = noCloudinary,
   routing: RoutingProvider = noRouting,
   billing: BillingConfig | null = null,
   rates?: RatesProvider,
+  extras: { wiki?: WikiProvider; nearby?: NearbyServicesProvider } = {},
 ): Express {
   const app = express();
   app.disable('x-powered-by');
@@ -45,6 +50,8 @@ export function createApp(
   app.use(helmet());
 
   const origins = config.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean);
+  // The watch page runs on the website and calls this API from the browser.
+  origins.push(...siteOrigins(config));
   // The website calls the checkout from the browser, so its address is always allowed.
   if (billing) {
     // With and without "www.", so either address of the website can start a payment.
@@ -99,8 +106,9 @@ export function createApp(
   app.use('/v1', placeRoutes(db, places));
   app.use('/v1', planRoutes(db, routing));
   app.use('/v1', notificationRoutes(db));
-  app.use('/v1', journeyRoutes(db, { watchBaseUrl: config.WATCH_BASE_URL, photos, places }));
+  app.use('/v1', journeyRoutes(db, { watchBaseUrl: watchBaseUrl(config), photos, places }));
   app.use('/v1', safetyRoutes(db));
+  app.use('/v1', destinationRoutes(db, extras.wiki ?? noWiki, extras.nearby ?? noNearbyServices));
 
   app.use(notFoundHandler);
   app.use(errorHandler);
