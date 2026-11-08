@@ -31,6 +31,7 @@ import { logError } from '../lib/log.js';
 import { createRatesProvider, type RatesProvider } from '../lib/rates.js';
 import { requireAuth, userOf } from '../middleware/auth.js';
 import { parse } from '../middleware/errors.js';
+import type { AuthUser } from '../types.js';
 
 const planKey = z.enum(['monthly', 'sixMonths', 'yearly', 'familyYearly']);
 const planSchema = z.object({ plan: planKey.default('yearly') });
@@ -62,6 +63,29 @@ export function billingRoutes(
 ): Router {
   const r = Router();
   const auth = requireAuth(db);
+
+  /** Whether this person may start paying for [plan] now. Returns the email the payment is made with. */
+  async function assertCanSubscribe(user: AuthUser, plan: z.infer<typeof planKey>): Promise<string> {
+    if (!billing) throw notSetUp();
+    if (!user.email) throw badRequest('Your account has no email address. Add one to subscribe.');
+    if (plan === FAMILY_KEY && !billing.products.familyYearly) {
+      throw new AppError(503, 'billing_unavailable', 'Arrivo Plus Family is not open yet. Please check back soon.');
+    }
+    const current = await db.getSubscription(user.id);
+    if (current?.status === 'active' && hasPlus(current)) {
+      throw conflict('You already have a paid plan. Use "Manage subscription" to change it.');
+    }
+    return user.email;
+  }
+
+  /** Opens a Dodo checkout for this person and plan, and returns where they pay. */
+  async function startCheckout(userId: string, email: string, plan: z.infer<typeof planKey>): Promise<string> {
+    if (!billing) throw notSetUp();
+    const name = (await db.getDisplayName(userId)) || undefined;
+    const session = await createCheckoutSession(billing, { planKey: plan, email, name, userId });
+    await db.recordCheckout({ userId, email, planKey: plan, sessionId: session.sessionId });
+    return session.checkoutUrl;
+  }
 
   /** The plans and what they cost, for the app and the website. Public. */
   r.get('/billing/plans', (_req, res) => {
@@ -142,21 +166,14 @@ export function billingRoutes(
       if (!billing) throw notSetUp();
       const user = userOf(req);
       const { plan } = parse(planSchema, req.body ?? {});
-      if (!user.email) throw badRequest('Your account has no email address. Add one to subscribe.');
-      if (plan === FAMILY_KEY && !billing.products.familyYearly) {
-        throw new AppError(503, 'billing_unavailable', 'Arrivo Plus Family is not open yet. Please check back soon.');
-      }
-      const current = await db.getSubscription(user.id);
-      if (current?.status === 'active' && hasPlus(current)) {
-        throw conflict('You already have a paid plan. Use "Manage subscription" to change it.');
-      }
+      const email = await assertCanSubscribe(user, plan);
       const now = Date.now();
       await db.deleteExpiredBillingTickets(new Date(now).toISOString());
       const { token, hash } = newTicketToken();
       await db.createBillingTicket({
         tokenHash: hash,
         userId: user.id,
-        email: user.email,
+        email,
         planKey: plan,
         expiresAt: new Date(now + TICKET_MINUTES * 60_000).toISOString(),
       });
@@ -176,10 +193,24 @@ export function billingRoutes(
         throw gone('This link has expired. Open Arrivo and tap Upgrade again.');
       }
       const planKey = body.plan ?? ticket.planKey;
-      const name = (await db.getDisplayName(ticket.userId)) || undefined;
-      const session = await createCheckoutSession(billing, { planKey, email: ticket.email, name, userId: ticket.userId });
-      await db.recordCheckout({ userId: ticket.userId, email: ticket.email, planKey, sessionId: session.sessionId });
-      res.status(201).json({ checkoutUrl: session.checkoutUrl });
+      res.status(201).json({ checkoutUrl: await startCheckout(ticket.userId, ticket.email, planKey) });
+    },
+  );
+
+  /**
+   * The same checkout for someone signed in on the website (the account dashboard), with no ticket:
+   * the Bearer token says who is paying. Only for the caller's own account, and never for someone
+   * who already has a paid plan.
+   */
+  r.post(
+    '/billing/checkout-session',
+    rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: 'draft-7', legacyHeaders: false }),
+    auth,
+    async (req, res) => {
+      const user = userOf(req);
+      const { plan } = parse(planSchema, req.body ?? {});
+      const email = await assertCanSubscribe(user, plan);
+      res.status(201).json({ checkoutUrl: await startCheckout(user.id, email, plan) });
     },
   );
 

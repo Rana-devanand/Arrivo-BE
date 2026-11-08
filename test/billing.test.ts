@@ -315,6 +315,86 @@ describe('paying on the website (ticket and checkout)', () => {
   });
 });
 
+describe('paying from the account dashboard (signed in, no ticket)', () => {
+  const stubDodo = (calls: { body: Record<string, unknown> }[] = []) =>
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        calls.push({ body: JSON.parse(init.body) });
+        return new Response(JSON.stringify({ session_id: 'cks_9', checkout_url: 'https://checkout.dodo.test/dash' }), { status: 200 });
+      }),
+    );
+
+  it('needs a signed-in person', async () => {
+    expect((await api.post('/v1/billing/checkout-session').send({ plan: 'yearly' })).status).toBe(401);
+  });
+
+  it('opens a Dodo checkout for the caller with the right product, email and user, and makes no ticket', async () => {
+    const calls: { body: Record<string, unknown> }[] = [];
+    stubDodo(calls);
+    const res = await api.post('/v1/billing/checkout-session').set(DAVE).send({ plan: 'sixMonths' });
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ checkoutUrl: 'https://checkout.dodo.test/dash' });
+    expect(JSON.stringify(res.body)).not.toContain('sk_test');
+    expect(calls[0]!.body.product_cart).toEqual([{ product_id: 'pdt_six', quantity: 1 }]);
+    expect(calls[0]!.body.customer).toMatchObject({ email: 'dave@example.test' });
+    expect(calls[0]!.body.metadata).toEqual({ user_id: 'dev-dave', plan: 'sixMonths' });
+    expect(db.checkouts[0]).toMatchObject({ userId: 'dev-dave', planKey: 'sixMonths', sessionId: 'cks_9' });
+    expect(db.tickets.size).toBe(0);
+  });
+
+  it('user B cannot start a payment in the name of user A', async () => {
+    const calls: { body: Record<string, unknown> }[] = [];
+    stubDodo(calls);
+    await api.post('/v1/billing/checkout-session').set(DAVE).send({ plan: 'monthly', userId: 'dev-erin', email: 'erin@example.test' });
+    expect(calls[0]!.body.metadata).toEqual({ user_id: 'dev-dave', plan: 'monthly' });
+    expect(calls[0]!.body.customer).toMatchObject({ email: 'dave@example.test' });
+    expect(db.checkouts[0]).toMatchObject({ userId: 'dev-dave' });
+  });
+
+  it('defaults to the yearly plan and refuses an unknown one', async () => {
+    const calls: { body: Record<string, unknown> }[] = [];
+    stubDodo(calls);
+    await api.post('/v1/billing/checkout-session').set(DAVE).send({});
+    expect(calls[0]!.body.product_cart).toEqual([{ product_id: 'pdt_year', quantity: 1 }]);
+    expect((await api.post('/v1/billing/checkout-session').set(DAVE).send({ plan: 'lifetime' })).status).toBe(400);
+  });
+
+  it('refuses someone who already has Plus, so nobody pays twice', async () => {
+    await db.upsertSubscription(sub('dev-erin'));
+    stubDodo();
+    expect((await api.post('/v1/billing/checkout-session').set(ERIN).send({ plan: 'yearly' })).status).toBe(409);
+    expect(db.checkouts).toHaveLength(0);
+  });
+
+  it('says Plus Family is not open when its product is not set up', async () => {
+    expect((await api.post('/v1/billing/checkout-session').set(DAVE).send({ plan: 'familyYearly' })).status).toBe(503);
+  });
+
+  it('is closed when payments are not set up', async () => {
+    const off = request(createApp(new MemoryDb(), cfg));
+    expect((await off.post('/v1/billing/checkout-session').set(DAVE).send({ plan: 'yearly' })).status).toBe(503);
+  });
+
+  it('says calmly when Dodo is down, without leaking details', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom with sk_test_secret_key', { status: 500 })));
+    const res = await api.post('/v1/billing/checkout-session').set(DAVE).send({ plan: 'yearly' });
+    expect(res.status).toBe(502);
+    expect(JSON.stringify(res.body)).not.toMatch(/sk_test|boom/);
+  });
+
+  it('lets the website send the sign-in token (CORS) but not other websites', async () => {
+    const preflight = (origin: string) =>
+      api
+        .options('/v1/billing/checkout-session')
+        .set('Origin', origin)
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'authorization,content-type');
+    expect((await preflight('https://site.test')).headers['access-control-allow-origin']).toBe('https://site.test');
+    expect((await preflight('https://evil.test')).headers['access-control-allow-origin']).toBeUndefined();
+  });
+});
+
 describe('the payment webhook (Dodo)', () => {
   const active = (extra: Record<string, unknown> = {}) => ({
     type: 'subscription.active',
