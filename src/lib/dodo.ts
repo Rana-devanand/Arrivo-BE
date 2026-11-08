@@ -30,7 +30,8 @@ const base = (mode: BillingConfig['mode']) =>
 
 const unavailable = () => new AppError(502, 'billing_unavailable', 'Payments are not available right now. Try again in a moment.');
 
-async function call(cfg: BillingConfig, path: string, init: RequestInit): Promise<Record<string, unknown>> {
+/** [tolerate] lists statuses that count as success (a delete of something already gone). */
+async function call(cfg: BillingConfig, path: string, init: RequestInit, tolerate: number[] = []): Promise<Record<string, unknown>> {
   let res: Response;
   try {
     res = await fetch(`${base(cfg.mode)}${path}`, {
@@ -41,6 +42,7 @@ async function call(cfg: BillingConfig, path: string, init: RequestInit): Promis
   } catch {
     throw unavailable();
   }
+  if (tolerate.includes(res.status) || res.status === 204) return {};
   if (!res.ok) {
     // The status and Dodo's short error code only: the body can echo the customer's email.
     const code = await res
@@ -56,7 +58,7 @@ async function call(cfg: BillingConfig, path: string, init: RequestInit): Promis
 /** Starts a hosted checkout for one product. Each link is single-use and lasts 24 hours. */
 export async function createCheckoutSession(
   cfg: BillingConfig,
-  args: { planKey: PlanKey; email: string; name?: string; userId: string },
+  args: { planKey: PlanKey; email: string; name?: string; userId: string; discountCode?: string },
 ): Promise<{ sessionId: string | null; checkoutUrl: string }> {
   const product = cfg.products[args.planKey];
   if (!product) throw new AppError(503, 'billing_unavailable', 'This plan is not open yet. Please check back soon.');
@@ -68,11 +70,104 @@ export async function createCheckoutSession(
       return_url: `${cfg.siteUrl}/pricing/success`,
       cancel_url: `${cfg.siteUrl}/pricing/cancelled`,
       metadata: { user_id: args.userId, plan: args.planKey },
+      // An offer the person chose. Dodo checks it (time window, validity) and takes the percentage off.
+      ...(args.discountCode ? { discount_codes: [args.discountCode] } : {}),
     }),
   });
   const url = out.checkout_url;
   if (typeof url !== 'string' || !url) throw unavailable();
   return { sessionId: typeof out.session_id === 'string' ? out.session_id : null, checkoutUrl: url };
+}
+
+/**
+ * Makes the discount in Dodo that an offer stands for: a percentage off the FIRST payment only (without
+ * `subscription_cycles` a subscription would keep the discount on every renewal), valid between the two times.
+ * Dodo counts the percentage in basis points: 20% is 2000. Returns Dodo's id for it.
+ */
+export async function createDiscount(
+  cfg: BillingConfig,
+  args: { code: string; name: string; percentOff: number; startsAt: string; endsAt: string },
+): Promise<string> {
+  const out = await call(cfg, '/discounts', {
+    method: 'POST',
+    body: JSON.stringify({
+      type: 'percentage',
+      amount: args.percentOff * 100,
+      code: args.code,
+      name: args.name,
+      starts_at: args.startsAt,
+      expires_at: args.endsAt,
+      subscription_cycles: 1,
+    }),
+  });
+  const id = out.discount_id;
+  if (typeof id !== 'string' || !id) throw unavailable();
+  return id;
+}
+
+/** Removes the discount in Dodo, so the code stops working there too. Already gone counts as done. */
+export async function deleteDiscount(cfg: BillingConfig, discountId: string): Promise<void> {
+  await call(cfg, `/discounts/${encodeURIComponent(discountId)}`, { method: 'DELETE' }, [404]);
+}
+
+/** One payment as the admin Revenue screen needs it. No card details, invoice links or customer ids. */
+export interface PaymentRecord {
+  id: string;
+  /** In the smallest unit of `currency` (cents for USD), as Dodo counts it. */
+  amountMinor: number;
+  currency: string;
+  status: string;
+  createdAt: string;
+  customerName: string;
+  customerEmail: string;
+  /** new, renewal, plan_change or on_demand when Dodo says. */
+  chargeType: string | null;
+  method: string | null;
+  refundStatus: 'partial' | 'full' | null;
+  disputeStatus: string | null;
+}
+
+const PAYMENT_PAGE = 100;
+/** Pages read per request (500 payments): Dodo has no total, so this bounds the work. */
+const PAYMENT_PAGES = 5;
+
+const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+
+/**
+ * The newest payments, read from Dodo itself (the source of truth for money), up to 500. `truncated` is true
+ * when there may be more. Items that do not look like a payment are skipped rather than guessed at.
+ */
+export async function listPayments(cfg: BillingConfig): Promise<{ payments: PaymentRecord[]; truncated: boolean }> {
+  const payments: PaymentRecord[] = [];
+  let truncated = false;
+  for (let page = 0; page < PAYMENT_PAGES; page++) {
+    const out = await call(cfg, `/payments?${new URLSearchParams({ page_size: String(PAYMENT_PAGE), page_number: String(page) })}`, { method: 'GET' });
+    const items = Array.isArray(out.items) ? (out.items as Record<string, unknown>[]) : [];
+    for (const p of items) {
+      const id = str(p.payment_id);
+      const createdAt = str(p.created_at);
+      if (!id || !createdAt || typeof p.total_amount !== 'number' || !Number.isFinite(p.total_amount)) continue;
+      const customer = (typeof p.customer === 'object' && p.customer !== null ? p.customer : {}) as Record<string, unknown>;
+      const refund = p.refund_status === 'partial' || p.refund_status === 'full' ? p.refund_status : null;
+      payments.push({
+        id,
+        amountMinor: Math.round(p.total_amount),
+        currency: (str(p.currency) ?? 'USD').toUpperCase(),
+        status: str(p.status) ?? 'unknown',
+        createdAt,
+        customerName: str(customer.name) ?? '',
+        customerEmail: str(customer.email) ?? '',
+        chargeType: str(p.charge_type),
+        method: str(p.payment_method_type) ?? str(p.payment_method),
+        refundStatus: refund,
+        disputeStatus: str(p.dispute_status),
+      });
+    }
+    if (items.length < PAYMENT_PAGE) break;
+    if (page === PAYMENT_PAGES - 1) truncated = true;
+  }
+  payments.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  return { payments, truncated };
 }
 
 /** A link to Dodo's customer portal, where the customer can cancel, change card, see invoices. */

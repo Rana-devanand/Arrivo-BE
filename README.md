@@ -106,6 +106,7 @@ Run them in order with `supabase db push` (from `backend/`):
 - `20261021000004_route_and_plate.sql`: train and metro modes; planned route, origin and number plate photo on journeys.
 - `20261108000014_journey_destination_details.sql`: `destination_image_url` and `destination_address` on journeys (the picture for "Repeat a trip", and the address the destination information language is read from).
 - `20261107000013_api_cache.sql`: `api_cache`, the shared lookup cache for destination information and nearby services. Server-only (row level security on, no policies). Keys are places, never people.
+- `20261109000015_coupons.sql`: `coupons`, the discount offers admins make (code, percentage, start and end, the Dodo discount id). Server-only (row level security on, no policies). Run it by hand in the Supabase SQL editor, and before deploying the backend that serves `/admin/coupons` and `/billing/offers`.
 
 ## Environment
 
@@ -158,6 +159,11 @@ All routes are under `/v1` and need `Authorization: Bearer <token>`, except
 |---|---|---|
 | GET / PUT | `/me` | read / update your profile (name, phone, photo address, `countryCode`). Includes your sign-in email and `role` (read-only) |
 | GET | `/admin/users` | ADMIN only: every user with email, phone, country, role and journey counts |
+| GET | `/admin/payments` | ADMIN only: the newest payments read from Dodo (up to 500, `truncated` says there may be more): person, amount in the smallest unit, currency, status, kind, way of paying, refund and dispute status. No card details, invoice links or customer ids. Never cached. 503 when payments are not set up, 502 when Dodo cannot be reached |
+| GET / POST | `/admin/coupons` | ADMIN only: list every discount offer (status `scheduled`, `live` or `ended`) / make one `{code, title, percentOff, startsAt, endsAt}`. Creates the Dodo discount first (first payment only, same window), then saves it; 409 for a used code, 503 when payments are not set up |
+| POST | `/admin/coupons/:id/end` | ADMIN only: end an offer now (deletes the Dodo discount first; safe to repeat) |
+| GET | `/billing/offers` | the offers valid right now (`code`, `title`, `percentOff`, `endsAt` only), never cached. For the website and, later, the app |
+| POST | `/billing/checkout-session` | website only, the caller's own account: `{plan, coupon?}`. A `coupon` must be a live offer (400 otherwise) |
 | POST | `/internal/sweep` | scheduler only (`Authorization: Bearer CRON_SECRET`): overdue, due progress updates, "location stopped" alerts. Supabase `pg_cron` calls it every 5 min (see migration `20261102000011_sweep.sql`) |
 | POST | `/track/:token/sharing` | the phone's service says sharing is paused or resumed `{ paused }` |
 | GET | `/admin/notifications?limit=` | ADMIN only: newest saved notifications (default 300, max 1000) with recipient, traveller, message and place name. Never coordinates |
@@ -179,7 +185,7 @@ All routes are under `/v1` and need `Authorization: Bearer <token>`, except
 | DELETE | `/places/saved/:id` | remove a saved place |
 | GET | `/routes/plan?oLat&oLng&dLat&dLng&mode=[&boardLat&boardLng&boardName&alightLat&alightLng&alightName&access&egress]` | distance, time, path and legs (walk to station, train/metro, walk) for walk, bike, car, train or metro. Falls back to an estimate (`estimated: true`) |
 | POST | `/journeys/photo-ticket` | signed permit to upload a number plate photo to Cloudinary |
-| GET | `/notifications` | invitations waiting for you plus stored events (accepted invite, journey started/arrived/cancelled/late, shared ride photo, SOS); also returns `unread` |
+| GET | `/notifications` | invitations waiting for you plus stored events (accepted invite, journey started/arrived/cancelled/late, shared ride photo, SOS, and for admins `new_user`: someone signed in for the first time); also returns `unread` |
 | GET | `/notifications/unread-count` | number of unread items (for the bell badge) |
 | POST | `/notifications/read` | mark some (or all) read |
 | GET / POST / DELETE | `/places/recent` | places the person picked before (so search can skip the paid lookup) |

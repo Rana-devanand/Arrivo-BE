@@ -4,6 +4,7 @@ import type {
   AdminUser,
   AuthUser,
   BillingTicket,
+  Coupon,
   Household,
   PlanKey,
   Subscription,
@@ -55,6 +56,13 @@ export interface Db {
   authenticate(token: string): Promise<AuthUser | null>;
 
   upsertProfile(user: AuthUser): Promise<Profile>;
+  /**
+   * Like `upsertProfile`, and also says whether this very call created the profile: the person's first ever
+   * sign-in. Exactly one call reports `created` for a person, even when several requests arrive together.
+   */
+  registerProfile(user: AuthUser): Promise<{ profile: Profile; created: boolean }>;
+  /** The ids of everyone with the ADMIN role. */
+  listAdminIds(): Promise<string[]>;
   updateProfile(id: string, patch: ProfilePatch): Promise<Profile>;
   /** Everyone, newest first, with journey counts. Only the admin routes call this. */
   listUsersForAdmin(): Promise<AdminUser[]>;
@@ -150,6 +158,15 @@ export interface Db {
   recordCheckout(c: { userId: string; email: string; planKey: PlanKey; sessionId: string | null }): Promise<void>;
   /** The newest checkout started with this email since [sinceIso]. */
   findLatestCheckoutByEmail(email: string, sinceIso: string): Promise<{ userId: string; planKey: PlanKey } | null>;
+
+  /** Discount offers (coupons). Only the admin routes write them; signed-in people read the live ones. */
+  createCoupon(c: Omit<Coupon, 'id' | 'createdAt'> & { createdBy: string }): Promise<Coupon>;
+  /** Every offer, newest first. */
+  listCoupons(): Promise<Coupon[]>;
+  getCoupon(id: string): Promise<Coupon | null>;
+  getCouponByCode(code: string): Promise<Coupon | null>;
+  /** Marks the offer as ended early. Returns it, or null when there is no such offer. */
+  endCoupon(id: string): Promise<Coupon | null>;
 
   /** Arrivo Plus Family: everyone the owner invited, newest last (cancelled ones too). */
   listFamilyMembers(ownerId: string): Promise<FamilyMember[]>;

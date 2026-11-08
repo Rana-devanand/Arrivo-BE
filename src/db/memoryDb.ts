@@ -6,6 +6,7 @@ import type {
   AdminUser,
   AuthUser,
   BillingTicket,
+  Coupon,
   Household,
   PlanKey,
   Subscription,
@@ -63,8 +64,16 @@ export class MemoryDb implements Db {
   }
 
   async upsertProfile(user: AuthUser): Promise<Profile> {
+    return (await this.registerProfile(user)).profile;
+  }
+
+  async listAdminIds(): Promise<string[]> {
+    return [...this.profiles.values()].filter((p) => p.role === 'ADMIN').map((p) => p.id);
+  }
+
+  async registerProfile(user: AuthUser): Promise<{ profile: Profile; created: boolean }> {
     const existing = this.profiles.get(user.id);
-    if (existing) return existing;
+    if (existing) return { profile: existing, created: false };
     const p: Profile & { email: string | null } = {
       id: user.id,
       email: user.email,
@@ -76,7 +85,7 @@ export class MemoryDb implements Db {
       createdAt: new Date().toISOString(),
     };
     this.profiles.set(user.id, p);
-    return p;
+    return { profile: p, created: true };
   }
 
   async updateProfile(id: string, patch: ProfilePatch): Promise<Profile> {
@@ -482,6 +491,7 @@ export class MemoryDb implements Db {
 
   subscriptions = new Map<string, Subscription>();
   tickets = new Map<string, BillingTicket>();
+  coupons = new Map<string, Coupon>();
   checkouts: { userId: string; email: string; planKey: PlanKey; sessionId: string | null; at: string }[] = [];
   households = new Map<string, Household>();
 
@@ -495,6 +505,34 @@ export class MemoryDb implements Db {
 
   async upsertSubscription(sub: Subscription): Promise<void> {
     this.subscriptions.set(sub.userId, { ...sub });
+  }
+
+  async createCoupon(c: Omit<Coupon, 'id' | 'createdAt'> & { createdBy: string }): Promise<Coupon> {
+    const { createdBy: _by, ...rest } = c;
+    const coupon: Coupon = { ...rest, id: randomUUID(), createdAt: new Date().toISOString() };
+    this.coupons.set(coupon.id, coupon);
+    return { ...coupon };
+  }
+
+  async listCoupons(): Promise<Coupon[]> {
+    return [...this.coupons.values()].map((c) => ({ ...c })).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async getCoupon(id: string): Promise<Coupon | null> {
+    const c = this.coupons.get(id);
+    return c ? { ...c } : null;
+  }
+
+  async getCouponByCode(code: string): Promise<Coupon | null> {
+    const c = [...this.coupons.values()].find((x) => x.code === code);
+    return c ? { ...c } : null;
+  }
+
+  async endCoupon(id: string): Promise<Coupon | null> {
+    const c = this.coupons.get(id);
+    if (!c) return null;
+    c.active = false;
+    return { ...c };
   }
 
   async createBillingTicket(t: BillingTicket): Promise<void> {

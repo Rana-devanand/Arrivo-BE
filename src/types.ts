@@ -64,6 +64,24 @@ export interface BillingTicket {
   expiresAt: string;
 }
 
+/** A discount offer an admin made. Shown while live, and passed to the checkout as a discount code. */
+export interface Coupon {
+  id: string;
+  /** What people tap or type: 3 to 16 capital letters and digits. */
+  code: string;
+  /** The name on the offer card, such as "Launch offer". */
+  title: string;
+  /** 1 to 90, taken off the first payment only. */
+  percentOff: number;
+  startsAt: string;
+  endsAt: string;
+  /** The matching discount in Dodo Payments, which is what really takes the money off. */
+  dodoDiscountId: string | null;
+  /** False once an admin ended it early. */
+  active: boolean;
+  createdAt: string;
+}
+
 /** A Family household: a name and some of the owner's contacts. */
 export interface Household {
   name: string;
@@ -150,7 +168,9 @@ export type NotificationType =
   /** No location reached the server for a while (FR-TRK-22). */
   | 'location_stale'
   | 'attachment'
-  | 'sos';
+  | 'sos'
+  /** Sent to every admin when a person signs in for the very first time (FR-NOT-15). */
+  | 'new_user';
 
 export interface NewNotification {
   type: NotificationType;

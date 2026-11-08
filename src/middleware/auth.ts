@@ -1,6 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
 import type { Db } from '../db/types.js';
+import { announceNewUser } from '../lib/adminAlerts.js';
 import { unauthorized } from '../lib/errors.js';
 import type { AuthUser } from '../types.js';
 
@@ -23,8 +24,11 @@ export function requireAuth(db: Db): RequestHandler {
     if (!user) throw unauthorized(db.rejectHint?.(token) ?? 'Invalid or expired token');
 
     if (!known.has(user.id)) {
-      await db.upsertProfile(user);
+      const { profile, created } = await db.registerProfile(user);
       known.add(user.id);
+      // Their very first sign-in: tell the admins. Awaited, because a serverless host may stop work that outlives
+      // the response; it costs one extra step once per person, and it never fails the request.
+      if (created) await announceNewUser(db, profile);
       if (known.size > 5000) known.clear();
     }
     req.user = user;

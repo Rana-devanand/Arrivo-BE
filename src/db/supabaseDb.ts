@@ -7,6 +7,7 @@ import type {
   AdminUser,
   AuthUser,
   BillingTicket,
+  Coupon,
   Household,
   PlanKey,
   Subscription,
@@ -39,6 +40,18 @@ function check<T>(res: { data: T | null; error: { message: string; code?: string
   if (res.error) throw new AppError(500, 'db_error', `${what} failed`, { reason: res.error.message, code: res.error.code });
   return res.data as T;
 }
+
+const toCoupon = (r: Row): Coupon => ({
+  id: r.id,
+  code: r.code,
+  title: r.title,
+  percentOff: r.percent_off,
+  startsAt: r.starts_at,
+  endsAt: r.ends_at,
+  dodoDiscountId: r.dodo_discount_id ?? null,
+  active: r.active,
+  createdAt: r.created_at,
+});
 
 const toProfile = (r: Row): Profile => ({
   id: r.id,
@@ -179,15 +192,28 @@ export class SupabaseDb implements Db {
   }
 
   async upsertProfile(user: AuthUser): Promise<Profile> {
+    return (await this.registerProfile(user)).profile;
+  }
+
+  async registerProfile(user: AuthUser): Promise<{ profile: Profile; created: boolean }> {
     const existing = await this.sb.from('profiles').select('*').eq('id', user.id).maybeSingle();
     const row = check(existing, 'read profile');
-    if (row) return toProfile(row);
-    const created = await this.sb
+    if (row) return { profile: toProfile(row), created: false };
+    // "Do nothing on conflict": when several first requests of a new person arrive together, the database lets exactly
+    // one insert the row, and only that one gets it back, so only that one reports `created`.
+    const inserted = await this.sb
       .from('profiles')
-      .insert({ id: user.id, display_name: user.displayName ?? '' })
-      .select('*')
-      .single();
-    return toProfile(check(created, 'create profile'));
+      .upsert({ id: user.id, display_name: user.displayName ?? '' }, { onConflict: 'id', ignoreDuplicates: true })
+      .select('*');
+    const rows = check(inserted, 'create profile') as Row[];
+    if (rows[0]) return { profile: toProfile(rows[0]), created: true };
+    const again = await this.sb.from('profiles').select('*').eq('id', user.id).single();
+    return { profile: toProfile(check(again, 'read profile')), created: false };
+  }
+
+  async listAdminIds(): Promise<string[]> {
+    const res = await this.sb.from('profiles').select('id').eq('user_role', 'ADMIN');
+    return (check(res, 'list admins') as Row[]).map((r) => r.id as string);
   }
 
   async updateProfile(id: string, patch: ProfilePatch): Promise<Profile> {
@@ -824,6 +850,47 @@ export class SupabaseDb implements Db {
       ),
       'save subscription',
     );
+  }
+
+  async createCoupon(c: Omit<Coupon, 'id' | 'createdAt'> & { createdBy: string }): Promise<Coupon> {
+    const res = await this.sb
+      .from('coupons')
+      .insert({
+        code: c.code,
+        title: c.title,
+        percent_off: c.percentOff,
+        starts_at: c.startsAt,
+        ends_at: c.endsAt,
+        dodo_discount_id: c.dodoDiscountId,
+        active: c.active,
+        created_by: c.createdBy,
+      })
+      .select('*')
+      .single();
+    return toCoupon(check(res, 'create coupon') as Row);
+  }
+
+  async listCoupons(): Promise<Coupon[]> {
+    const res = await this.sb.from('coupons').select('*').order('created_at', { ascending: false }).limit(500);
+    return (check(res, 'list coupons') as Row[]).map(toCoupon);
+  }
+
+  async getCoupon(id: string): Promise<Coupon | null> {
+    const res = await this.sb.from('coupons').select('*').eq('id', id).maybeSingle();
+    const r = check(res, 'read coupon') as Row | null;
+    return r ? toCoupon(r) : null;
+  }
+
+  async getCouponByCode(code: string): Promise<Coupon | null> {
+    const res = await this.sb.from('coupons').select('*').eq('code', code).maybeSingle();
+    const r = check(res, 'read coupon') as Row | null;
+    return r ? toCoupon(r) : null;
+  }
+
+  async endCoupon(id: string): Promise<Coupon | null> {
+    const res = await this.sb.from('coupons').update({ active: false }).eq('id', id).select('*').maybeSingle();
+    const r = check(res, 'end coupon') as Row | null;
+    return r ? toCoupon(r) : null;
   }
 
   async createBillingTicket(t: BillingTicket): Promise<void> {

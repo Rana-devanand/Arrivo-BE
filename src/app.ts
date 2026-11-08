@@ -98,7 +98,7 @@ export function createApp(
   // sign-in say so themselves. It must come before the routers that require one for everything.
   app.use('/v1', billingRoutes(db, billing, rates));
   app.use('/v1', profileRoutes(db, photos));
-  app.use('/v1', adminRoutes(db));
+  app.use('/v1', adminRoutes(db, billing));
   app.use('/v1', contactRoutes(db, { devRoutes: config.ENABLE_DEV_ROUTES === 'true', mailer }));
   app.use('/v1', invitationRoutes(db));
   app.use('/v1', householdRoutes(db));

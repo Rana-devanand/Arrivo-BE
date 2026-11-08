@@ -17,6 +17,7 @@ import {
 } from '../domain/plans.js';
 import type { Db } from '../db/types.js';
 import { COUNTRIES } from '../domain/countries.js';
+import { isLive } from '../domain/coupons.js';
 import { applyDodoEvent, type DodoEvent } from '../lib/billingEvents.js';
 import {
   createCheckoutSession,
@@ -35,6 +36,13 @@ import type { AuthUser } from '../types.js';
 
 const planKey = z.enum(['monthly', 'sixMonths', 'yearly', 'familyYearly']);
 const planSchema = z.object({ plan: planKey.default('yearly') });
+/** An offer code: what an admin made (3 to 16 capital letters and digits), typed in any case. */
+const couponCode = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^[A-Z0-9]{3,16}$/, 'That offer code does not look right.');
+const checkoutSessionSchema = planSchema.extend({ coupon: couponCode.optional() });
 const checkoutSchema = z.object({
   ticket: z.string().min(20).max(100),
   plan: planKey.optional(),
@@ -79,10 +87,10 @@ export function billingRoutes(
   }
 
   /** Opens a Dodo checkout for this person and plan, and returns where they pay. */
-  async function startCheckout(userId: string, email: string, plan: z.infer<typeof planKey>): Promise<string> {
+  async function startCheckout(userId: string, email: string, plan: z.infer<typeof planKey>, discountCode?: string): Promise<string> {
     if (!billing) throw notSetUp();
     const name = (await db.getDisplayName(userId)) || undefined;
-    const session = await createCheckoutSession(billing, { planKey: plan, email, name, userId });
+    const session = await createCheckoutSession(billing, { planKey: plan, email, name, userId, discountCode });
     await db.recordCheckout({ userId, email, planKey: plan, sessionId: session.sessionId });
     return session.checkoutUrl;
   }
@@ -208,11 +216,26 @@ export function billingRoutes(
     auth,
     async (req, res) => {
       const user = userOf(req);
-      const { plan } = parse(planSchema, req.body ?? {});
+      const { plan, coupon } = parse(checkoutSessionSchema, req.body ?? {});
       const email = await assertCanSubscribe(user, plan);
-      res.status(201).json({ checkoutUrl: await startCheckout(user.id, email, plan) });
+      // An offer only counts while it is live: checked here, and again by Dodo, which takes the money off.
+      let discountCode: string | undefined;
+      if (coupon) {
+        const offer = await db.getCouponByCode(coupon);
+        if (!offer || !isLive(offer, new Date())) throw badRequest('This offer is not available any more.');
+        discountCode = offer.code;
+      }
+      res.status(201).json({ checkoutUrl: await startCheckout(user.id, email, plan, discountCode) });
     },
   );
+
+  /** The offers that are on right now, for signed-in people: the ones whose time has come and not gone. */
+  r.get('/billing/offers', auth, async (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const now = new Date();
+    const live = (await db.listCoupons()).filter((c) => isLive(c, now));
+    res.json({ offers: live.map((c) => ({ code: c.code, title: c.title, percentOff: c.percentOff, endsAt: c.endsAt })) });
+  });
 
   /** A link to Dodo's customer portal: cancel, change card, invoices. */
   r.post('/billing/portal', auth, async (req, res) => {

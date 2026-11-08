@@ -2,7 +2,9 @@ import { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
 
 import type { Db } from '../db/types.js';
-import { forbidden, notFound } from '../lib/errors.js';
+import { MAX_COUPON_DAYS, couponView } from '../domain/coupons.js';
+import { createDiscount, deleteDiscount, listPayments, type BillingConfig } from '../lib/dodo.js';
+import { AppError, badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
 import { requireAuth, userOf } from '../middleware/auth.js';
 import { parse } from '../middleware/errors.js';
 import type { AdminNotificationRow, Journey } from '../types.js';
@@ -52,7 +54,21 @@ function placeOf(n: AdminNotificationRow, j: Journey | undefined): string | null
   return null;
 }
 
-export function adminRoutes(db: Db): Router {
+const couponSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z0-9]{3,16}$/, 'The code is 3 to 16 capital letters or digits.'),
+  title: z.string().trim().min(3, 'Give the offer a name.').max(60),
+  percentOff: z.coerce.number().int().min(1, 'The discount is 1 to 90 percent.').max(90, 'The discount is 1 to 90 percent.'),
+  startsAt: z.string().datetime({ offset: true }).optional(),
+  endsAt: z.string().datetime({ offset: true }),
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function adminRoutes(db: Db, billing: BillingConfig | null = null): Router {
   const r = Router();
   r.use('/admin', requireAuth(db), requireAdmin(db));
 
@@ -89,9 +105,21 @@ export function adminRoutes(db: Db): Router {
           journeyId: n.journeyId,
           traveller: j ? { id: j.ownerId, name: traveller?.displayName ?? '' } : null,
           place: placeOf(n, j),
+          // Only that a ride photo came with it. The photo itself never leaves the server.
+          hasAttachment: n.type === 'attachment',
         };
       }),
     });
+  });
+
+  /**
+   * Every payment Dodo knows of, newest first (up to 500): the money side of the admin screens. Read from Dodo, which
+   * is the record of what was charged. Only what the Revenue screen shows: no card details, invoice links or ids.
+   */
+  r.get('/admin/payments', async (_req, res) => {
+    if (!billing) throw new AppError(503, 'billing_unavailable', 'Payments are not set up on this server.');
+    res.set('Cache-Control', 'no-store');
+    res.json(await listPayments(billing));
   });
 
   /** Per user: how many journeys, and per journey how many notifications went out and from where. */
@@ -133,6 +161,72 @@ export function adminRoutes(db: Db): Router {
         })
         .sort((a, b) => b.journeyCount - a.journeyCount || b.notificationCount - a.notificationCount),
     });
+  });
+
+  /** Every discount offer, newest first, with where it stands now. */
+  r.get('/admin/coupons', async (_req, res) => {
+    const now = new Date();
+    res.json({ coupons: (await db.listCoupons()).map((c) => couponView(c, now)) });
+  });
+
+  /**
+   * Makes an offer: the discount is created in Dodo first (it is what takes the money off), then remembered here.
+   * It lasts between two times, takes a percentage off the first payment, and is shown to signed-in people only while live.
+   */
+  r.post('/admin/coupons', async (req, res) => {
+    const body = parse(couponSchema, req.body);
+    const now = new Date();
+    const startsAt = new Date(body.startsAt ?? now.toISOString());
+    const endsAt = new Date(body.endsAt);
+    if (endsAt.getTime() <= now.getTime()) throw badRequest('The end time must be in the future.');
+    if (endsAt.getTime() <= startsAt.getTime()) throw badRequest('The end time must be after the start time.');
+    if (endsAt.getTime() - startsAt.getTime() > MAX_COUPON_DAYS * DAY_MS) {
+      throw badRequest(`An offer can run for ${MAX_COUPON_DAYS} days at most.`);
+    }
+    if (!billing) throw new AppError(503, 'billing_unavailable', 'Payments are not set up, so offers cannot be made yet.');
+    if (await db.getCouponByCode(body.code)) throw conflict('That code is already used. Pick another.');
+
+    const dodoDiscountId = await createDiscount(billing, {
+      code: body.code,
+      name: body.title,
+      percentOff: body.percentOff,
+      startsAt: startsAt.toISOString(),
+      endsAt: endsAt.toISOString(),
+    });
+    try {
+      const coupon = await db.createCoupon({
+        code: body.code,
+        title: body.title,
+        percentOff: body.percentOff,
+        startsAt: startsAt.toISOString(),
+        endsAt: endsAt.toISOString(),
+        dodoDiscountId,
+        active: true,
+        createdBy: userOf(req).id,
+      });
+      res.status(201).json(couponView(coupon, now));
+    } catch (e) {
+      // Do not leave a working discount in Dodo that this dashboard knows nothing about.
+      await deleteDiscount(billing, dodoDiscountId).catch(() => undefined);
+      throw e;
+    }
+  });
+
+  /** Ends an offer now. The discount is removed in Dodo first, so the code stops working there too. */
+  r.post('/admin/coupons/:id/end', async (req, res) => {
+    const coupon = await db.getCoupon(String(req.params.id));
+    if (!coupon) throw notFound('Offer not found');
+    if (coupon.active) {
+      if (coupon.dodoDiscountId) {
+        if (!billing) throw new AppError(503, 'billing_unavailable', 'Payments are not set up, so this offer cannot be ended here.');
+        await deleteDiscount(billing, coupon.dodoDiscountId);
+      }
+      const ended = await db.endCoupon(coupon.id);
+      if (!ended) throw notFound('Offer not found');
+      res.json(couponView(ended, new Date()));
+      return;
+    }
+    res.json(couponView(coupon, new Date()));
   });
 
   r.get('/admin/users/:id/journeys', async (req, res) => {
