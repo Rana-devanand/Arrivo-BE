@@ -43,9 +43,11 @@ const couponCode = z
   .toUpperCase()
   .regex(/^[A-Z0-9]{3,16}$/, 'That offer code does not look right.');
 const checkoutSessionSchema = planSchema.extend({ coupon: couponCode.optional() });
+const ticketSchema = checkoutSessionSchema;
 const checkoutSchema = z.object({
   ticket: z.string().min(20).max(100),
   plan: planKey.optional(),
+  coupon: couponCode.optional(),
 });
 
 /** A pass from the app to the website lasts this long. */
@@ -87,6 +89,14 @@ export function billingRoutes(
   }
 
   /** Opens a Dodo checkout for this person and plan, and returns where they pay. */
+  /** An offer only counts while it is live: checked here, and again by Dodo, which takes the money off. */
+  async function liveDiscountCode(coupon: string | undefined): Promise<string | undefined> {
+    if (!coupon) return undefined;
+    const offer = await db.getCouponByCode(coupon);
+    if (!offer || !isLive(offer, new Date())) throw badRequest('This offer is not available any more.');
+    return offer.code;
+  }
+
   async function startCheckout(userId: string, email: string, plan: z.infer<typeof planKey>, discountCode?: string): Promise<string> {
     if (!billing) throw notSetUp();
     const name = (await db.getDisplayName(userId)) || undefined;
@@ -173,8 +183,9 @@ export function billingRoutes(
     async (req, res) => {
       if (!billing) throw notSetUp();
       const user = userOf(req);
-      const { plan } = parse(planSchema, req.body ?? {});
+      const { plan, coupon } = parse(ticketSchema, req.body ?? {});
       const email = await assertCanSubscribe(user, plan);
+      const discountCode = await liveDiscountCode(coupon);
       const now = Date.now();
       await db.deleteExpiredBillingTickets(new Date(now).toISOString());
       const { token, hash } = newTicketToken();
@@ -185,7 +196,7 @@ export function billingRoutes(
         planKey: plan,
         expiresAt: new Date(now + TICKET_MINUTES * 60_000).toISOString(),
       });
-      res.status(201).json({ url: `${billing.siteUrl}/pricing?t=${token}&plan=${plan}`, expiresInMinutes: TICKET_MINUTES });
+      res.status(201).json({ url: `${billing.siteUrl}/pricing?t=${token}&plan=${plan}${discountCode ? `&coupon=${discountCode}` : ''}`, expiresInMinutes: TICKET_MINUTES });
     },
   );
 
@@ -201,7 +212,7 @@ export function billingRoutes(
         throw gone('This link has expired. Open Arrivo and tap Upgrade again.');
       }
       const planKey = body.plan ?? ticket.planKey;
-      res.status(201).json({ checkoutUrl: await startCheckout(ticket.userId, ticket.email, planKey) });
+      res.status(201).json({ checkoutUrl: await startCheckout(ticket.userId, ticket.email, planKey, await liveDiscountCode(body.coupon)) });
     },
   );
 
@@ -218,13 +229,7 @@ export function billingRoutes(
       const user = userOf(req);
       const { plan, coupon } = parse(checkoutSessionSchema, req.body ?? {});
       const email = await assertCanSubscribe(user, plan);
-      // An offer only counts while it is live: checked here, and again by Dodo, which takes the money off.
-      let discountCode: string | undefined;
-      if (coupon) {
-        const offer = await db.getCouponByCode(coupon);
-        if (!offer || !isLive(offer, new Date())) throw badRequest('This offer is not available any more.');
-        discountCode = offer.code;
-      }
+      const discountCode = await liveDiscountCode(coupon);
       res.status(201).json({ checkoutUrl: await startCheckout(user.id, email, plan, discountCode) });
     },
   );

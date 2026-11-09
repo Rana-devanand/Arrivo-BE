@@ -262,3 +262,28 @@ describe('paying with an offer', () => {
     expect(checkoutCall()).toBeUndefined();
   });
 });
+
+describe('FR-BIL-12 an offer on the phone-to-website ticket', () => {
+  const ticketCode = async (body: Record<string, unknown>) => {
+    const res = await api.post('/v1/billing/ticket').set(USER).send(body);
+    return { res, coupon: res.status === 201 ? new URL(res.body.url).searchParams.get('coupon') : null };
+  };
+
+  it('puts a live code in the link and sends it on to Dodo at checkout', async () => {
+    await make();
+    const { coupon, res } = await ticketCode({ plan: 'yearly', coupon: 'launch20' });
+    expect(coupon).toBe('LAUNCH20');
+    const token = new URL(res.body.url).searchParams.get('t')!;
+    const pay = await api.post('/v1/billing/checkout').send({ ticket: token, coupon });
+    expect(pay.status).toBe(201);
+    const checkout = dodo.find((c) => c.url.endsWith('/checkouts'))!;
+    expect(checkout.body?.discount_codes).toEqual(['LAUNCH20']);
+  });
+
+  it('refuses a code that is not live, at the ticket and at checkout', async () => {
+    await seed();
+    expect((await ticketCode({ coupon: 'OLDONE' })).res.status).toBe(400);
+    const token = new URL((await ticketCode({})).res.body.url).searchParams.get('t')!;
+    expect((await api.post('/v1/billing/checkout').send({ ticket: token, coupon: 'NOPE123' })).status).toBe(400);
+  });
+});
